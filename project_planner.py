@@ -48,6 +48,49 @@ def _project_file(project_name: str) -> Path:
     return get_registry_dir("projects") / f"{safe_name(project_name)}.json"
 
 
+def _ensure_chat_channel(project_name: str, board_name: str, team: str | None, heartbeat_member: str | None) -> None:
+    """Create the 2.0 team chat root and subscribe all known workers.
+
+    The chat root is a persistent Kanban task pinned ``scheduled``; workers
+    post ``[agora:msg]`` comments and pull unseen messages via notify cursors
+    (see agora.chat). Persists ``chat_root_id`` into the project JSON.
+    """
+    try:
+        from agora.chat import ensure_chat_root, subscribe_worker
+        from agora.kanban_compat import kanban_db as _kdb
+        conn = _kdb.connect()
+        try:
+            root_id = ensure_chat_root(
+                conn, project_name=project_name, tenant=board_name, created_by="agora",
+            )
+            # Subscribe all team workers + the heartbeat member.
+            workers: list[str] = []
+            if team:
+                from agora.team_manager import get_team
+                tm = get_team(team)
+                if tm:
+                    workers = [w["name"] for w in tm.get("workers", [])]
+            if heartbeat_member and heartbeat_member not in workers:
+                workers.append(heartbeat_member)
+            for w in workers:
+                try:
+                    subscribe_worker(conn, root_id=root_id, worker=w)
+                except Exception as sub_exc:
+                    logger.warning("Failed to subscribe %s to chat: %s", w, sub_exc)
+
+            # Persist the real task id.
+            pf = _project_file(project_name)
+            if pf.exists():
+                data = json.loads(pf.read_text())
+                data["chat_root_id"] = root_id
+                pf.write_text(json.dumps(data, indent=2))
+            logger.info("Chat channel ready for project %s (root=%s, workers=%d)", project_name, root_id, len(workers))
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("Chat channel setup failed for %s: %s", project_name, exc)
+
+
 def _ensure_project_board(project_name: str) -> str:
     """Create a kanban board name for the project.
 
@@ -573,6 +616,7 @@ def start_project(
         "last_heartbeat_pid": None,
         "complete_count": 0,
         "completion_check_pos": 0,
+        "chat_root_id": None,  # 2.0 team channel task id (set below)
     }
 
     # Create cron job for heartbeat if member is specified
@@ -605,6 +649,9 @@ def start_project(
     # Also add heartbeat_member if not in a team
     if heartbeat_member and not team:
         _add_project_to_worker(heartbeat_member, project_name)
+
+    # 2.0: create the team chat root and subscribe all known workers.
+    _ensure_chat_channel(project_name, board_name, team, heartbeat_member)
 
     # Write AGENTS.md to workdir so workers auto-load team context
     update_project_agents_md(project_name)

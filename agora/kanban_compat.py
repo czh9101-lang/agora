@@ -35,6 +35,14 @@ logger = logging.getLogger(__name__)
 # symbol -> candidate new-location modules, in preference order
 _MOVED: dict[str, list[str]] = {
     "connect": ["hermes_cli.kanban_db_connect"],
+    # Notify subscriptions (Sept decomposition moved these out of kanban_db).
+    "add_notify_sub": ["hermes_cli.kanban_db_notify"],
+    "list_notify_subs": ["hermes_cli.kanban_db_notify"],
+    "remove_notify_sub": ["hermes_cli.kanban_db_notify"],
+    "claim_unseen_events_for_sub": ["hermes_cli.kanban_db_notify"],
+    "unseen_events_for_sub": ["hermes_cli.kanban_db_notify"],
+    "advance_notify_cursor": ["hermes_cli.kanban_db_notify"],
+    "rewind_notify_cursor": ["hermes_cli.kanban_db_notify"],
 }
 
 _OVERRIDDEN: set[str] = set()

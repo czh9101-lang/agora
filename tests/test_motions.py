@@ -69,6 +69,11 @@ def test_list_motions(clean_db):
 def test_update_motion_status(clean_db):
     """Close a motion with decision/rationale/action_items, verify updated fields."""
     motion = db.create_motion(title="Close Me")
+    # A 0-step motion may not be adopted (v1.8.4 guard) — add a speak step so
+    # the adopted decision is legal.
+    db.add_message(motion["id"], "alice", round_num=1, stance="support",
+                   content="I support this", step_type="speak")
+    db.increment_step_count(motion["id"])
     db.update_motion_status(
         motion["id"],
         status="closed",

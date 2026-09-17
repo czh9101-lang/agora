@@ -457,6 +457,9 @@ def register_all_tools(ctx: Any) -> None:
     # --- Self-drive project management tools ---
     _register_project_tools(ctx)
 
+    # --- Chat bus tools (2.0 unified team channel) ---
+    _register_chat_tools(ctx)
+
     # --- Worker & team management tools ---
     _register_worker_tools(ctx)
 
@@ -917,6 +920,117 @@ _PROJECT_STATUS_SCHEMA = {
         "name": {"type": "string", "description": "Project name (empty = list all)", "default": ""},
     },
 }
+
+
+def _register_chat_tools(ctx: Any) -> None:
+    """Register the 2.0 chat-bus tools: agora_message + agora_read_chat.
+
+    The chat root is a persistent Kanban task per project (see agora.chat).
+    Workers post ``[agora:msg]`` comments and pull their unseen messages via
+    notify cursors — no separate DB, no broadcast fan-out.
+    """
+    from agora import chat as _chat
+
+    # --- Tool: agora_message ---
+    _MESSAGE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string", "description": "Project name whose team channel to post to."},
+            "type": {
+                "type": "string",
+                "enum": ["progress", "blocking", "mention"],
+                "description": "Message kind: progress (status update), blocking (hit a blocker), mention (@ a teammate).",
+            },
+            "content": {"type": "string", "description": "The message body you composed."},
+            "target": {"type": "string", "description": "Teammate to @ (required when type='mention')."},
+        },
+        "required": ["project", "type", "content"],
+    }
+
+    def _message_handler(args: dict, **kwargs) -> dict:
+        project = args.get("project", "")
+        msg_type = args.get("type", "")
+        content = args.get("content", "")
+        target = args.get("target", "")
+        if not project:
+            return {"error": "project is required"}
+        try:
+            from project_planner import get_project
+            from agora.kanban_compat import kanban_db as _kdb
+            proj = get_project(project)
+            if proj is None:
+                return {"error": f"Project '{project}' not found"}
+            root_id = proj.get("chat_root_id", "")
+            if not root_id:
+                return {"error": f"Project '{project}' has no chat channel yet"}
+            # Author: the calling worker's profile, else the caller identity.
+            author = os.environ.get("HERMES_PROFILE") or args.get("author") or "agent"
+            conn = _kdb.connect()
+            try:
+                cid = _chat.post_message(
+                    conn, root_id=root_id, author=author, msg_type=msg_type,
+                    content=content, target=target or None,
+                )
+                return {"status": "posted", "comment_id": cid, "project": project}
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error("agora_message failed: %s", exc)
+            return {"error": str(exc)}
+
+    ctx.register_tool(
+        name="agora_message",
+        toolset="agora",
+        schema=_MESSAGE_SCHEMA,
+        handler=_wrap_handler(_message_handler),
+        description="Post a message to your team's shared channel. Use for progress updates ('done with X'), blockers ('stuck on Y, need input'), or @-mentioning a teammate to coordinate. Fire-and-forget like texting — it does not return a reply. Key params: project (str, REQUIRED) — project name; type (str, REQUIRED: progress|blocking|mention); content (str, REQUIRED) — the message; target (str) — teammate name for mention. Returns {status, comment_id}. Example: agora_message({\"project\": \"myapp\", \"type\": \"mention\", \"target\": \"architect\", \"content\": \"API signature changed, please update the schema\"}).",
+        emoji="💬",
+    )
+
+    # --- Tool: agora_read_chat ---
+    _READ_CHAT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string", "description": "Project name whose channel to read."},
+            "limit": {"type": "integer", "description": "Max recent messages to return (default 20).", "default": 20},
+        },
+        "required": ["project"],
+    }
+
+    def _read_chat_handler(args: dict, **kwargs) -> dict:
+        project = args.get("project", "")
+        limit = args.get("limit", 20)
+        if not project:
+            return {"error": "project is required"}
+        try:
+            from project_planner import get_project
+            from agora.kanban_compat import kanban_db as _kdb
+            proj = get_project(project)
+            if proj is None:
+                return {"error": f"Project '{project}' not found"}
+            root_id = proj.get("chat_root_id", "")
+            if not root_id:
+                return {"messages": [], "total": 0}
+            conn = _kdb.connect()
+            try:
+                msgs = _chat.read_recent(conn, root_id=root_id, worker="*", limit=limit)
+                return {"messages": msgs, "total": len(msgs)}
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error("agora_read_chat failed: %s", exc)
+            return {"error": str(exc)}
+
+    ctx.register_tool(
+        name="agora_read_chat",
+        toolset="agora",
+        schema=_READ_CHAT_SCHEMA,
+        handler=_wrap_handler(_read_chat_handler),
+        description="Read recent messages from your team's shared channel. Use to catch up on what teammates reported — progress notes, blockers, @-mentions — before acting. Key params: project (str, REQUIRED) — project name; limit (int, default 20). Returns {messages: [{type, author, content, target, created_at}], total}. Example: agora_read_chat({\"project\": \"myapp\", \"limit\": 10}).",
+        emoji="📖",
+    )
+
+    logger.info("Registered 2 chat bus tools")
 
 
 def _register_project_tools(ctx: Any) -> None:
