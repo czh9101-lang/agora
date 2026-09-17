@@ -154,12 +154,26 @@ def add_speech(
     stance: str,
     content: str,
     step_type: str = "speak",
+    target_role: str = "",
+    is_chair: bool = False,
 ) -> int:
-    """Record one speech as a ``[agora:msg]`` proposal/opinion comment."""
+    """Record one speech as a ``[agora:msg]`` comment.
+
+    Preserves the full discussion-engine fields (step_type, is_chair,
+    target_role) so the driver's history builder can reconstruct chair
+    guidance, vote calls, dispatches and investigations. ``step_type`` maps to
+    a message type: ``proposal``/``opinion`` for speech, ``guidance``/
+    ``vote_call``/``dispatch``/``investigation``/``human_input`` pass through
+    as-is.
+    """
     stance = stance if stance in _STANCES else "neutral"
-    msg_type = "proposal" if step_type == "proposal" else "opinion"
+    if step_type == "proposal":
+        msg_type = "proposal"
+    elif step_type in ("guidance", "vote_call", "dispatch", "investigation", "human_input"):
+        msg_type = step_type
+    else:
+        msg_type = "opinion"
     from agora import chat as _chat
-    # Use chat.post_message with motion_id so the payload carries the motion.
     body = _chat.MSG_PREFIX + json.dumps({
         "type": msg_type,
         "role": role,
@@ -167,6 +181,9 @@ def add_speech(
         "stance": stance,
         "content": content,
         "motion": motion_id,
+        "step_type": step_type,
+        "is_chair": bool(is_chair),
+        "target_role": target_role or "",
     }, ensure_ascii=False)
     return kb.add_comment(conn, motion_id, author=role, body=body)
 
@@ -194,12 +211,34 @@ def add_vote(
 
 
 def get_speeches(conn, motion_id: str) -> list[dict[str, Any]]:
-    """Parse speeches (proposal/opinion) from a motion's comments."""
+    """Parse speech comments (proposal/opinion) from a motion's comments.
+
+    Chair guidance/vote_call/dispatch/investigation messages are excluded —
+    these are meta-messages, not participant speech.
+    """
     from agora import chat as _chat
     out: list[dict[str, Any]] = []
     for c in kb.list_comments(conn, motion_id):
         p = _chat.parse_message(c.body)
         if p is None or p.get("type") not in ("proposal", "opinion"):
+            continue
+        p["comment_id"] = c.id
+        p["created_at"] = c.created_at
+        out.append(p)
+    return out
+
+
+def get_all_messages(conn, motion_id: str) -> list[dict[str, Any]]:
+    """Parse ALL discussion messages (speech + chair guidance + vote calls + …).
+
+    Returns each parsed ``[agora:msg]`` payload enriched with comment_id and
+    created_at, in comment order. Used by the driver's history builder.
+    """
+    from agora import chat as _chat
+    out: list[dict[str, Any]] = []
+    for c in kb.list_comments(conn, motion_id):
+        p = _chat.parse_message(c.body)
+        if p is None:
             continue
         p["comment_id"] = c.id
         p["created_at"] = c.created_at

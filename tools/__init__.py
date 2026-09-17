@@ -238,7 +238,7 @@ def _wrap_handler_async(handler):
 
 def register_all_tools(ctx: Any) -> None:
     """Register all Agora tools and the /agora slash command."""
-    from agora.storage import motions as db
+    from agora.storage import motions_kanban as db
 
     # --- Tool: agora_raise_motion ---
     async def _raise_motion_handler(args: dict, **kwargs) -> dict:
@@ -476,7 +476,7 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     The calling agent can continue working — it will see the discussion
     result in its MEMORY.md when the discussion completes.
     """
-    from agora.storage import motions as db
+    from agora.storage import motions_kanban as db
     title = args.get("title", "")
     if not title or not title.strip():
         return {
@@ -558,19 +558,26 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     except Exception:
         pass
 
-    # Create the motion
-    motion = db.create_motion(
-        title=title,
-        description=description + (f"\n\nContext: {context}" if context else ""),
-        max_rounds=rounds,
-        source=source,
-        source_task_id=source_task_id or "",
-        blocking=blocking,
-        participants=participants,
-        chair=chair,
-        max_steps=max_steps,
-        project=resolved_project,
-    )
+    # Create the motion (2.0: motion is a Kanban sub-task of the project's
+    # chat root — so it requires an active project).
+    try:
+        motion = db.create_motion(
+            title=title,
+            description=description + (f"\n\nContext: {context}" if context else ""),
+            max_rounds=rounds,
+            source=source,
+            source_task_id=source_task_id or "",
+            blocking=blocking,
+            participants=participants,
+            chair=chair,
+            max_steps=max_steps,
+            project=resolved_project,
+        )
+    except ValueError as exc:
+        return {
+            "error": str(exc),
+            "hint": "agora_raise_motion requires an active project (the motion lives on the project's team channel). Start a project first with agora_start_project.",
+        }
 
     # Refresh AGENTS.md so the new motion shows up in the active discussions list
     if resolved_project:
@@ -777,7 +784,7 @@ def _handle_agora_command(ctx: Any, raw_args: str) -> str | None:
         /agora show <motion_id>      — show discussion messages
         /agora result <motion_id>    — show discussion result
     """
-    from agora.storage import motions as db
+    from agora.storage import motions_kanban as db
     parts = raw_args.strip().split(None, 1)
     if not parts:
         return (

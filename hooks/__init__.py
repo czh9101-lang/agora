@@ -63,7 +63,7 @@ def _on_task_completed(
     """
     # --- Phase 1: Existing behavior — write motion result to task + memory ---
     try:
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
     except ImportError:
         db = None
 
@@ -278,7 +278,7 @@ def _on_task_claimed(
 
         # If the task has a source motion, inject the motion decision as a comment
         try:
-            from agora.storage import motions as db
+            from agora.storage import motions_kanban as db
             motion = _find_motion_for_task(task_id, db)
             if motion is not None and motion.get("status") == "closed":
                 decision = motion.get("decision", "")

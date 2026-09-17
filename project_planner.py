@@ -191,8 +191,8 @@ def update_project_agents_md(project_name: str) -> dict:
 
     # Active discussions — gives everyone context on ongoing debates
     try:
-        from agora.storage import motions as db
-        active_motions = db.list_motions(status_filter="active", limit=10)
+        from agora.storage import motions_kanban as db
+        active_motions = db.list_motions(status_filter="active", limit=10, project=project_name)
         if active_motions:
             lines.append("## Active Discussions")
             lines.append("")
@@ -279,8 +279,8 @@ def update_project_agents_md(project_name: str) -> dict:
     # Only show motions that actually had a discussion (step_count > 0) —
     # 0-step "adopted" motions were bypassed and should not appear as ✅.
     try:
-        from agora.storage import motions as db
-        recent = db.list_motions(status_filter="closed", limit=10)
+        from agora.storage import motions_kanban as db
+        recent = db.list_motions(status_filter="closed", limit=10, project=project_name)
         adopted = [
             m for m in recent
             if m.get("decision") == "adopted" and (m.get("step_count") or 0) > 0

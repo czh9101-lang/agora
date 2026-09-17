@@ -161,7 +161,7 @@ def _rescue_stuck_motions(project: dict) -> None:
     - If no chair/participants can be resolved → close as error
     """
     try:
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
         from agora.discussion.agent_spawn import spawn_discussion_driver
 
         project_name = project.get("name", "")

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agora.storage import motions as db
+from agora.storage import motions_kanban as db
 from agora.utils import get_global_root, parse_json_response
 from .agent_spawn import spawn_agent_speak, spawn_chair_speak
 from .chair import (
@@ -779,14 +779,15 @@ class DiscussionDriver:
         db.update_motion_state(self.motion_id, "closed")
         db.save_discussion_state(self.motion_id, current_state="closed")
 
-        # Create kanban tasks from action items
+        # Create execution tasks from action items — 2.0: parents = the motion
+        # itself, so the conclusion auto-injects into each worker's context.
         created_tasks: list[str] = []
-        if action_items:
-            created_tasks = self._create_kanban_tasks(
+        if action_items and decision == "adopted":
+            created_tasks = self._create_execution_tasks(
                 motion_id=self.motion_id,
                 title=title,
                 action_items=action_items,
-                source_task_id=motion.get("source_task_id"),
+                tenant=self._project_tenant(),
             )
 
         logger.info(
@@ -919,93 +920,71 @@ class DiscussionDriver:
         messages = db.get_messages(self.motion_id)
         return [m for m in messages if m.get("step_type") == "human_input"]
 
-    def _create_kanban_tasks(
-        self, motion_id: str, title: str,
-        action_items: list, source_task_id: str | None,
-    ) -> list[str]:
-        """Create kanban tasks from discussion action items."""
+    def _project_tenant(self) -> str | None:
+        """Resolve the project's kanban tenant (board) for task creation."""
+        if not self.project_name:
+            return None
         try:
-            from agora.kanban_compat import kanban_db
-        except ImportError:
-            logger.warning("kanban_db not available — skipping task creation")
-            return []
+            from project_planner import get_project
+            proj = get_project(self.project_name)
+            if proj and proj.get("board"):
+                return proj["board"]
+        except Exception:
+            pass
+        return self.project_name
 
-        # Determine the board/tenant for this project.
-        # Uses the project's board name (e.g. "agora-myproject") for isolation.
-        # Falls back to the raw project name for backward compatibility.
-        tenant = self.project_name if self.project_name else None
+    def _create_execution_tasks(
+        self, motion_id: str, title: str,
+        action_items: list, tenant: str | None,
+    ) -> list[str]:
+        """Create execution tasks from discussion action items (2.0).
+
+        Parents = the motion task, so the conclusion auto-injects via Hermes'
+        parent handoff. Owner→assignee role resolution is delegated to the
+        execution converter's assignee_map; here we resolve role names through
+        the project's team, falling back to the raw owner name.
+        """
+        from agora import execution as _ex
+        from agora.kanban_compat import kanban_db as _kdb
+
+        # Resolve owner (role name) → worker profile via the team, when a team
+        # is bound to the project.
+        assignee_map: dict[str, str] = {}
         if self.project_name:
             try:
+                from agora.team_manager import get_team_for_project, get_team, get_assignee_for_role
                 from project_planner import get_project
-                proj = get_project(self.project_name)
-                if proj and proj.get("board"):
-                    tenant = proj["board"]
-            except Exception:
-                pass  # fall back to raw project name
+                team = get_team_for_project(self.project_name)
+                if not team:
+                    proj = get_project(self.project_name)
+                    if proj and proj.get("team"):
+                        team = get_team(proj["team"])
+                if team:
+                    for ai in action_items:
+                        if isinstance(ai, dict):
+                            owner = str(ai.get("owner") or "").strip()
+                            if owner and owner not in assignee_map:
+                                picked = get_assignee_for_role(team["name"], owner)
+                                if picked:
+                                    assignee_map[owner] = picked
+            except Exception as exc:
+                logger.debug("assignee_map resolution failed: %s", exc)
 
-        created: dict[int, str] = {}
-        conn = kanban_db.connect()
+        conn = _kdb.connect()
         try:
-            for idx, ai in enumerate(action_items):
-                if isinstance(ai, dict):
-                    item_title = ai.get("item", str(ai))
-                    owner = ai.get("owner", "")
-                    depends_on = ai.get("depends_on", [])
-                else:
-                    item_title = str(ai)
-                    owner = ""
-                    depends_on = []
-
-                # Map owner to team member
-                assignee = owner if owner else None
-                if owner and self.project_name:
-                    try:
-                        from agora.team_manager import get_team_for_project, get_team, get_assignee_for_role
-                        from project_planner import get_project
-                        # Try direct team_for_project match first
-                        team = get_team_for_project(self.project_name)
-                        # If not found, try via project registry
-                        if not team:
-                            proj = get_project(self.project_name)
-                            if proj and proj.get("team"):
-                                team = get_team(proj["team"])
-                        if team:
-                            picked = get_assignee_for_role(team["name"], owner)
-                            if picked:
-                                assignee = picked
-                    except Exception:
-                        pass
-
-                parent_ids: list[str] = []
-                for dep in depends_on:
-                    dep_idx = dep - 1 if isinstance(dep, int) else None
-                    if dep_idx is not None and dep_idx in created:
-                        parent_ids.append(created[dep_idx])
-
-                if not parent_ids and source_task_id:
-                    parent_ids = [source_task_id]
-
-                task_id = kanban_db.create_task(
-                    conn,
-                    title=item_title[:200],
-                    body=(
-                        f"From Agora discussion: {title}\n"
-                        f"Motion: {motion_id}\n"
-                        f"Action item {idx + 1}/{len(action_items)}: {item_title}"
-                    ),
-                    assignee=assignee,
-                    workspace_kind="scratch",
-                    parents=parent_ids,
-                    tenant=tenant,
-                )
-                created[idx] = task_id
-                logger.info("Created kanban task %s: %s", task_id, item_title[:80])
+            return _ex.motion_to_tasks(
+                conn,
+                motion_id=motion_id,
+                action_items=action_items,
+                title=title,
+                tenant=tenant,
+                assignee_map=assignee_map,
+            )
         except Exception as exc:
-            logger.error("Failed to create kanban tasks: %s", exc)
+            logger.error("Failed to create execution tasks: %s", exc)
+            return []
         finally:
             conn.close()
-
-        return list(created.values())
 
     def _abort(self, reason: str) -> DiscussionResult:
         """Abort the discussion with an error."""

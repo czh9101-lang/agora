@@ -50,11 +50,11 @@ def handle_agora_cli(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        from .agora.storage import motions as db
+        from .agora.storage import motions_kanban as db
     except ImportError:
         import sys, pathlib
         sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
 
     if cmd == "list":
         motions = db.list_motions(status_filter=args.status, limit=args.limit)
@@ -107,12 +107,19 @@ def handle_agora_cli(args: argparse.Namespace) -> int:
         # Create the motion — actual discussion requires ctx.llm which
         # is only available in gateway/agent context, not CLI.
         # For CLI we create the motion and print instructions.
-        motion = db.create_motion(
-            title=args.topic,
-            description=args.description,
-            max_rounds=args.rounds,
-            source="user",
-        )
+        # 2.0: a motion lives on a project's team channel, so it needs a
+        # project. CLI has no project context — explain instead of crashing.
+        try:
+            motion = db.create_motion(
+                title=args.topic,
+                description=args.description,
+                max_rounds=args.rounds,
+                source="user",
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            print("Hint: start a project first (`agora_start_project`), then raise a motion within it.")
+            return 1
         print(f"Motion created: {motion['id']}")
         print(f"Title: {motion['title']}")
         print(f"\nTo start the discussion, use:")

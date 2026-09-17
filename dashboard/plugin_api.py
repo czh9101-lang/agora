@@ -322,7 +322,7 @@ def list_motions(
 ):
     """List Agora discussions."""
     try:
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
         motions = db.list_motions(status_filter=status, limit=limit)
         return {
             "motions": [
@@ -354,7 +354,7 @@ def list_motions(
 def get_motion(motion_id: str):
     """Get a motion with all its messages."""
     try:
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
         motion = db.get_motion(motion_id)
         if motion is None:
             raise HTTPException(status_code=404, detail="Motion not found")
@@ -412,7 +412,7 @@ def start_discussion(req: StartDiscussionRequest):
     """
     try:
         import sys as _sys
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
 
         # Auto-resolve participants and chair from the project
         participants = req.participants
@@ -456,6 +456,12 @@ def start_discussion(req: StartDiscussionRequest):
                     workdir = proj.get("workdir", "")
             except Exception:
                 pass
+
+        if not req.project:
+            raise HTTPException(
+                status_code=400,
+                detail="A motion lives on a project's team channel — 'project' is required. Start a project first.",
+            )
 
         motion = db.create_motion(
             title=req.title,
@@ -512,7 +518,7 @@ def start_discussion(req: StartDiscussionRequest):
 def get_discussion_state_endpoint(motion_id: str):
     """Get the current event-driven discussion state."""
     try:
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
         motion = db.get_motion(motion_id)
         if motion is None:
             raise HTTPException(status_code=404, detail="Motion not found")
@@ -978,7 +984,7 @@ class AddMessageRequest(BaseModel):
 def add_motion_message(motion_id: str, req: AddMessageRequest):
     """Add a human message to a discussion (human participation)."""
     try:
-        from agora.storage import motions as db
+        from agora.storage import motions_kanban as db
         motion = db.get_motion(motion_id)
         if motion is None:
             raise HTTPException(status_code=404, detail="Motion not found")

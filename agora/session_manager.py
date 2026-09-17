@@ -104,7 +104,7 @@ def _heuristic_activity_count(worker_name: str) -> int:
 
     # Count messages in the Agora motions DB attributed to this worker
     try:
-        from .storage import motions as db
+        from .storage import motions_kanban as db
         # We can't easily enumerate all motions for a worker without
         # listing all motions, so just count messages with role=worker_name
         motions_db = db._agora_db_path()
