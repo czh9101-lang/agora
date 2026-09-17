@@ -367,61 +367,35 @@ def _on_task_blocked(
                 task_id,
             )
             try:
-                from agora.storage import motions as db
-                motion = db.create_motion(
-                    title=f"Unblock: {block_reason[:80]}",
-                    description=(
-                        f"Task {task_id} was blocked with reason: {block_reason}\n\n"
-                        f"This motion was auto-triggered by the kanban_task_blocked hook."
-                    ),
-                    source="agent",
-                    source_task_id=task_id,
-                    blocking=True,
-                )
-
-                # Auto-resolve chair and participants from the project so
-                # spawn_discussion_driver has what it needs.  Without this,
-                # the motion sits at "discussing" forever — the driver never
-                # fires because chair/participants are empty.
-                chair = ""
-                participants = None
-                workdir = ""
+                # 2.0: blocked→motion via the kanban-backed converter. The
+                # motion hangs off the project's chat root and depends on the
+                # blocked task for context handoff.
+                from agora import execution as _ex
+                from agora.kanban_compat import kanban_db as _kdb
+                from project_planner import get_project
                 project_name = tenant or ""
+                proj = get_project(project_name) if project_name else None
+                chat_root_id = (proj or {}).get("chat_root_id", "")
+                if not chat_root_id:
+                    logger.info(
+                        "kanban_task_blocked: no chat root for project %s — "
+                        "deferring to leader heartbeat", project_name,
+                    )
+                    return
+                _conn = _kdb.connect()
                 try:
-                    from project_planner import get_project, get_heartbeat_member
-                    from agora.team_manager import get_team_for_project, get_team
-                    proj = get_project(project_name) if project_name else None
-                    if proj:
-                        workdir = proj.get("workdir", "")
-                        chair = get_heartbeat_member(project_name) or ""
-                        if proj.get("team"):
-                            team = get_team(proj["team"])
-                            if team:
-                                participants = [w["name"] for w in team.get("workers", [])]
-                except Exception as exc:
-                    logger.debug("Auto-resolve chair/participants failed: %s", exc)
-
-                if chair and participants:
-                    from agora.discussion.agent_spawn import spawn_discussion_driver
-                    spawn_status = spawn_discussion_driver(
-                        motion_id=motion["id"],
-                        chair=chair,
-                        participants=participants,
-                        workdir=workdir,
-                        project_name=project_name,
+                    mid = _ex.blocked_to_motion(
+                        _conn,
+                        task_id=task_id,
+                        chat_root_id=chat_root_id,
+                        tenant=board or project_name,
                     )
-                    logger.info(
-                        "kanban_task_blocked: created motion %s and spawned discussion "
-                        "(chair=%s, participants=%s, status=%s)",
-                        motion["id"], chair, participants,
-                        spawn_status.get("status"),
-                    )
-                else:
-                    logger.info(
-                        "kanban_task_blocked: created motion %s for blocked task %s "
-                        "(chair/participants not resolved — will be picked up by leader heartbeat)",
-                        motion["id"], task_id,
-                    )
+                finally:
+                    _conn.close()
+                logger.info(
+                    "kanban_task_blocked: created motion %s for blocked task %s",
+                    mid, task_id,
+                )
             except Exception as exc:
                 logger.error(
                     "kanban_task_blocked: failed to create motion for task %s: %s",

@@ -998,3 +998,101 @@ def add_motion_message(motion_id: str, req: AddMessageRequest):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Agora 2.0: unified team channel + motion threads (Kanban-backed)
+# ---------------------------------------------------------------------------
+
+class PostChatMessageRequest(BaseModel):
+    type: str = Field("progress", description="Message kind: progress|blocking|mention")
+    content: str = Field(..., description="Message body")
+    author: Optional[str] = None
+    target: Optional[str] = None
+
+
+@router.get("/projects/{name}/chat")
+def get_project_chat(name: str, limit: int = Query(20, ge=1, le=200)):
+    """List the project team channel's recent messages (Kanban-backed)."""
+    try:
+        from project_planner import get_project
+        from agora.kanban_compat import kanban_db as _kdb
+        from agora import chat as _chat
+
+        proj = get_project(name)
+        if proj is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        root_id = proj.get("chat_root_id", "")
+        if not root_id:
+            return {"messages": [], "total": 0, "chat_root_id": None}
+
+        conn = _kdb.connect()
+        try:
+            msgs = _chat.read_recent(conn, root_id=root_id, worker="*", limit=limit)
+            return {"messages": msgs, "total": len(msgs), "chat_root_id": root_id}
+        finally:
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/projects/{name}/chat")
+def post_project_chat(name: str, req: PostChatMessageRequest):
+    """Post a message to the project team channel."""
+    try:
+        from project_planner import get_project
+        from agora.kanban_compat import kanban_db as _kdb
+        from agora import chat as _chat
+
+        proj = get_project(name)
+        if proj is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        root_id = proj.get("chat_root_id", "")
+        if not root_id:
+            raise HTTPException(status_code=400, detail="Project has no chat channel yet")
+
+        author = req.author or "user"
+        conn = _kdb.connect()
+        try:
+            cid = _chat.post_message(
+                conn, root_id=root_id, author=author, msg_type=req.type,
+                content=req.content, target=req.target,
+            )
+            return {"status": "posted", "comment_id": cid}
+        finally:
+            conn.close()
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/projects/{name}/motions")
+def get_project_motions(name: str, status: str = Query("all", pattern="^(all|active|closed)$")):
+    """List the project's motions (Kanban-backed child tasks of the chat root)."""
+    try:
+        from project_planner import get_project
+        from agora.kanban_compat import kanban_db as _kdb
+        from agora import motion as _motion
+
+        proj = get_project(name)
+        if proj is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        root_id = proj.get("chat_root_id", "")
+        if not root_id:
+            return {"motions": [], "total": 0}
+
+        conn = _kdb.connect()
+        try:
+            motions = _motion.list_motions(conn, chat_root_id=root_id, status_filter=status)
+            return {"motions": motions, "total": len(motions)}
+        finally:
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

@@ -608,7 +608,10 @@ heartbeat, treat this as a NEW project phase. Do NOT carry over previous \
 PROJECT_COMPLETE decisions — reassess from scratch against the CURRENT goal.
 
 Check current status and take action per your SOUL.md heartbeat protocol. \
-Before creating tasks, check existing running/ready tasks to avoid duplicates. \
+In Agora 2.0, task creation and dispatch are AUTOMATIC — when a motion is \
+adopted its action items become tasks automatically, and the dispatcher \
+assigns them. Your job is to assess, raise/chair discussions, and arbitrate. \
+Before raising a motion, check existing active motions to avoid duplicates. \
 Never assign tasks to yourself — you are the leader, not an implementer. \
 If everything is running fine, say "ALL_GOOD" with a brief summary. \
 If tasks are all done, assess the project and plan the next valuable work. \
