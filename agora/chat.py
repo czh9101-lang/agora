@@ -221,13 +221,19 @@ def read_recent(conn, *, root_id: str, worker: str, limit: int = 20) -> list[dic
     return list_messages(conn, root_id=root_id, limit=limit)
 
 
-def rewind_unseen(conn, *, root_id: str, worker: str, old_cursor: int) -> None:
-    """Roll a worker's cursor back so unseen events can be re-claimed."""
+def rewind_unseen(conn, *, root_id: str, worker: str, old_cursor: int, claimed_cursor: int) -> None:
+    """Roll a worker's cursor back so unseen events can be re-claimed.
+
+    ``old_cursor`` is the cursor BEFORE the failed claim; ``claimed_cursor``
+    is what the claim advanced it to. The CAS guard only rewinds if no later
+    notifier moved the row, so a retry never clobbers newer progress.
+    """
     kb.rewind_notify_cursor(
         conn,
         task_id=root_id,
         platform=PLATFORM,
         chat_id=worker,
         thread_id="",
-        cursor=old_cursor,
+        claimed_cursor=claimed_cursor,
+        old_cursor=old_cursor,
     )

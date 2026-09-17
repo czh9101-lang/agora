@@ -357,6 +357,9 @@ def _result_field(result: Optional[str], key: str) -> Any:
     if not result:
         return None
     try:
-        return json.loads(result).get(key)
+        parsed = json.loads(result)
     except (json.JSONDecodeError, ValueError):
         return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed.get(key)

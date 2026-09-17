@@ -2,6 +2,53 @@
 
 All notable changes to the Agora plugin are documented here.
 
+## [2.0.0] — 2026-09-17
+
+### Unified discussion & execution engine (built on Hermes Kanban)
+
+Agora 2.0 removes the split between discussion (motions.db) and execution
+(kanban) — both now live on Kanban. A motion is a sub-task of a persistent
+team chat root; speech and votes are `[agora:msg]` comments; the conclusion
+lands in `task.result`; and adopted conclusions become execution tasks
+automatically with the motion as parent, so context flows by Hermes' native
+parent-handoff instead of leader transcription.
+
+**M1 — unified chat bus** (`agora/chat.py`)
+- Chat root = persistent Kanban task pinned `scheduled` (never dispatchable,
+  never completes). Messages are `[agora:msg]` JSON comments. Per-worker
+  unseen tracking reuses Hermes notify-subscription cursors under
+  `platform="agora"` (gateway notifier skips them; Agora owns the pull).
+- `agora_message` / `agora_read_chat` tools. Fire-and-forget; no fan-out.
+
+**M2 — motion threading** (`agora/motion.py`)
+- Motion = Kanban sub-task; deterministic sparse scheduler (`next_speaker`:
+  @mention priority, then round-robin — not AutoGen's per-turn selector).
+- Conclusion written to `task.result` via direct done-flip (the chat root is
+  `scheduled`, so `complete_task`'s parent gate would refuse).
+- 0-speech `adopted` guard retained (downgrades to `error`).
+
+**M3 — discussion↔execution converter** (`agora/execution.py`)
+- `motion_to_tasks`: action items → tasks with `parents=[motion_id]`.
+- `blocked_to_motion`: a blocked task raises a motion depending on it;
+  `kanban_task_blocked` hook now uses this path.
+
+**M4 — lean leader**
+- Leader SOUL.md + heartbeat prompt: Assess/Discuss/Arbitrate (dropped
+  Assign/Verify). No manual task transcription.
+
+**M5 — dashboard viz**
+- `GET/POST /projects/{name}/chat` + `GET /projects/{name}/motions`.
+
+**Review fixes**
+- `chat.rewind_unseen` passed `cursor=` but `rewind_notify_cursor` takes
+  `claimed_cursor`+`old_cursor` — would TypeError on retry. Fixed.
+- `motion._result_field` crashed on non-dict `task.result` (e.g. valid JSON
+  scalar). Fixed.
+- `kanban_compat` bridge extended for notify symbols moved in the Sept
+  decomposition.
+
+**Tests:** 36/36 pass (13 new: chat, motion, execution).
+
 ## [1.9.2] — 2026-09-05
 
 ### Hermes September-2026 decomposition compatibility (PR #102117)

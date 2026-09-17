@@ -107,3 +107,19 @@ def test_parse_message_skips_non_chat(chat_conn):
 
     msgs = chat.read_recent(conn, root_id=root, worker="dev", limit=10)
     assert len(msgs) == 1, "non-[agora:msg] comments must be filtered out"
+
+
+def test_rewind_unseen_retries_delivery(chat_conn):
+    conn, board = chat_conn
+    root = chat.ensure_chat_root(conn, project_name="demo", tenant=board)
+    chat.subscribe_worker(conn, root_id=root, worker="w1")
+
+    chat.post_message(conn, root_id=root, author="a", msg_type="progress", content="one")
+
+    old, new, n = chat.pull_unseen(conn, root_id=root, worker="w1")
+    assert n == 1
+
+    # Simulate a failed delivery: rewind the cursor, then re-claim.
+    chat.rewind_unseen(conn, root_id=root, worker="w1", old_cursor=old, claimed_cursor=new)
+    _, _, n2 = chat.pull_unseen(conn, root_id=root, worker="w1")
+    assert n2 == 1, "rewound message must be re-claimable"

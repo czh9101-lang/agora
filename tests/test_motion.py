@@ -107,3 +107,14 @@ def test_next_speaker_scheduler():
     ) == "reviewer"
     # No last speaker → first participant.
     assert motion.next_speaker(participants, last_speaker=None, history=[]) == "architect"
+
+
+def test_get_motion_non_dict_result_is_safe(conn, root):
+    c, board = conn
+    mid = motion.create_motion(c, chat_root_id=root, title="t", participants=["a"], chair="l", tenant=board)
+    # Simulate a malformed task.result that is valid JSON but not a dict.
+    c.execute("UPDATE tasks SET result='123' WHERE id=?", (mid,))
+    c.commit()
+    m = motion.get_motion(c, mid)
+    assert m is not None
+    assert m["decision"] == "", "non-dict result must not crash decision extraction"
