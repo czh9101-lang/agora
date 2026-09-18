@@ -137,3 +137,15 @@ def test_list_motions(chat_root):
     closed = db.list_motions(status_filter="closed", chat_root_id=root)
     assert len(closed) == 1
     assert closed[0]["id"] == m1["id"]
+
+
+def test_create_motion_preserves_source(chat_root):
+    conn, board, root = chat_root
+    m = db.create_motion(
+        title="agent-raised", participants=["a"], chair="l",
+        project="demo", chat_root_id=root, source="agent",
+    )
+    assert m["source"] == "agent"
+
+    m2 = db.create_motion(title="user-raised", participants=["a"], chair="l", project="demo", chat_root_id=root)
+    assert m2["source"] == "user"  # default

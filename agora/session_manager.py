@@ -96,30 +96,12 @@ def _query_session_db(profile_name: str, session_id: str) -> dict | None:
 
 
 def _heuristic_activity_count(worker_name: str) -> int:
-    """Fallback heuristic: count motions messages + completed kanban tasks.
+    """Fallback heuristic: count completed kanban tasks.
 
-    If either exceeds the threshold the session is flagged for rotation.
+    (The 1.x motions-DB message count was dropped in 2.0 — motions now live on
+    Kanban as tasks, so counting this worker's done tasks is the correct proxy.)
     """
     count = 0
-
-    # Count messages in the Agora motions DB attributed to this worker
-    try:
-        from .storage import motions_kanban as db
-        # We can't easily enumerate all motions for a worker without
-        # listing all motions, so just count messages with role=worker_name
-        motions_db = db._agora_db_path()
-        if motions_db.exists():
-            conn = sqlite3.connect(str(motions_db))
-            try:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM messages WHERE role = ?",
-                    (worker_name,),
-                ).fetchone()
-                count += row[0] if row else 0
-            finally:
-                conn.close()
-    except Exception as exc:
-        logger.debug("Heuristic motions count failed for %s: %s", worker_name, exc)
 
     # Count completed kanban tasks assigned to this worker
     try:
