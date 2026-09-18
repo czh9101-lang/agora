@@ -2,6 +2,18 @@
 
 All notable changes to the Agora plugin are documented here.
 
+## [2.0.1] — 2026-09-18
+
+### Post-release review fixes
+
+- `session_manager._heuristic_activity_count` called `_agora_db_path()` on the
+  Kanban backend, which has no such method — the motions-DB message count was
+  silently returning 0 (dead branch). Removed it; the Kanban done-task count is
+  the correct 2.0 activity proxy.
+- `motion.create_motion` dropped the 1.x `source` field (user vs agent), which
+  the rescue/`_find_motion_for_task` path relies on. Added `source` to the
+  motion metadata and threaded it through `motions_kanban.create_motion`.
+
 ## [2.0.0] — 2026-09-17
 
 ### Unified discussion & execution engine (built on Hermes Kanban)
