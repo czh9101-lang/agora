@@ -17,7 +17,11 @@ provides_tools:
 - agora_start_project
 - agora_stop_project
 - agora_project_status
+- agora_update_project
 - agora_create_task
+- agora_close_task
+- agora_message
+- agora_read_chat
 - agora_create_worker
 - agora_list_workers
 - agora_remove_worker
@@ -25,6 +29,4 @@ provides_tools:
 - agora_create_team
 - agora_list_teams
 - agora_remove_team
-- agora_message
-- agora_read_chat
-version: "2.0.1"
+version: "2.0.2"

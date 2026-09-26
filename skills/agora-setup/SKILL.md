@@ -13,15 +13,18 @@ workers, forming a team, and starting a self-driving project.
 
 ## Prerequisites
 
-- Hermes Agent installed and running
-- Agora plugin enabled (`hermes plugins enable agora` + restart gateway)
+- Hermes Agent installed and running (v0.20.x or newer recommended)
+- Agora plugin enabled (`hermes plugins enable agora` + restart **both** gateway and dashboard)
+- A model/provider configured — workers inherit the global `config.yaml` and `.env`
+- The gateway running — it hosts the kanban dispatcher that spawns workers
 
 ## Quick Start (3 Steps)
 
 ### Step 1: Create Workers
 
 Create workers from role templates. Each worker is a Hermes profile with its
-own SOUL.md (identity), MEMORY.md (written by discussion engine/hooks), and skills directory.
+own SOUL.md (identity) and skills directory. (Workers have no `memory` tool —
+self-growth happens through **Skills** and **SOUL.md** only.)
 
 **Worker toolsets (v1.8.6+):** `terminal, file, web, skills, todo, session_search`.
 No `browser`, `tts`, `vision`, `code_execution`, `memory`, or `cronjob`.
@@ -95,6 +98,11 @@ for project context, and start working autonomously.
 4. **Discussions** → leader raises motions for design decisions, workers debate
 5. **Self-stop** → when stop condition is met, leader raises a motion to vote
 
+> **Set expectations:** the leader is only woken at heartbeat time (default 15
+> minutes, `heartbeat_minutes`). Nothing happening right after `start_project`
+> is normal — it is not a failure. Tell the user this up front, or lower the
+> interval for a quick first look.
+
 ## Monitoring
 
 ```
@@ -105,10 +113,13 @@ agora_project_status(name="my-project")
 agora_list_motions(status="active")
 
 # Get discussion result
-agora_get_result(motion_id="motion-xxx")
+agora_get_result(motion_id="t_xxx")
 
 # Read discussion messages
-agora_get_messages(motion_id="motion-xxx")
+agora_get_messages(motion_id="t_xxx")
+
+# Team channel — what workers reported to each other (2.0)
+agora_read_chat(project="my-project", limit=20)
 ```
 
 Or open the Dashboard: `hermes dashboard` → Agora tab.
@@ -185,16 +196,26 @@ agora_raise_motion(
 
 ## Troubleshooting
 
+- **Nothing happens after starting?** Normal for up to one heartbeat interval
+  (default 15 min) — the leader is only woken at heartbeat time. Check
+  `hermes cron list` for `heartbeat-<project_name>`, or Trigger manually.
 - **Workers not picking up tasks?** Check that the gateway is running and
   the kanban dispatcher is active: `hermes gateway status`
 - **Discussions not starting?** Check that the leader has `agora` toolset
   (it should be automatic). Check `agora_list_motions(status="active")`.
 - **Heartbeat not firing?** Check cron: `hermes cron list`. Look for
   `heartbeat-<project_name>`.
-- **Worker memory full?** Workers no longer use the `memory` tool (v1.8.6+).
-  MEMORY.md is written by the discussion engine and hooks only. If you need
-  to reset a worker, use `agora_remove_worker` + `agora_create_worker`, or
-  edit `~/.hermes/profiles/<name>/memories/MEMORY.md` manually.
+- **No Agora tab in the dashboard?** You restarted only the gateway —
+  the dashboard discovers plugin tabs at startup: `hermes dashboard restart`.
+- **Worker says "No inference provider configured"?** The global model config
+  is missing, or the profile's `.env` symlink broke. Check `~/.hermes/.env`
+  and `~/.hermes/profiles/<name>/.env`.
+- **Worker crashing repeatedly with 429/503?** API rate limiting. Set
+  `api_max_retries` (e.g. 50) on the worker profile, or globally
+  `hermes config set agent.api_max_retries 50`.
+- **Resetting a worker?** Workers have no `memory` tool (removed in v1.8.7+).
+  To reset one, use `agora_remove_worker` + `agora_create_worker`, or edit its
+  SOUL.md at `~/.hermes/profiles/<name>/SOUL.md`.
 
 ## Code Review Workflow (v1.8.6+)
 

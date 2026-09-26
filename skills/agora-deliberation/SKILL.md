@@ -45,7 +45,7 @@ After a discussion closes:
 
 ```
 # Check the result
-agora_get_result(motion_id="motion-xxx")
+agora_get_result(motion_id="t_xxx")
 
 # Returns: decision (adopted/rejected), summary, action_items
 ```
@@ -61,9 +61,15 @@ Action items become kanban tasks automatically. Check your task list for new ass
 4. Chair evaluates → continue? dispatch? vote? close? (JSON-based meta-decision)
 5. Repeat 3-4 → until close or max_steps (default 30)
 6. (Optional) Vote → each participant votes → chair decides outcome
-7. Summary → chair generates action items + writes to MEMORY.md
-8. Action items → kanban tasks (auto-dispatched to workers)
+7. Summary → chair generates the conclusion, written to the motion task's result
+8. If adopted → action items become kanban tasks (auto-dispatched to workers)
 9. If blocking: source task unblocked with discussion result in comments
 ```
+
+> **Where the discussion lives (v2.0):** a motion is a Kanban sub-task of the
+> project's team channel. Speech and votes are `[agora:msg]` comments on that
+> task, and the conclusion lands in `task.result` — so the whole discussion is
+> traceable on the board. There is no separate discussion database and no
+> MEMORY.md write.
 
 > **Speaker 429 retry (v1.8.8+):** If a worker hits API 429/rate-limit during discussion, `_speaker_speak` retries up to 10 times with incremental backoff (10s, 20s, …, 100s), clearing session on each retry. This prevents empty contributions from being stored as the worker's speech.

@@ -2,6 +2,37 @@
 
 All notable changes to the Agora plugin are documented here.
 
+## [2.0.2] — 2026-09-27
+
+### Docs rewrite + manifest fix (onboarding pass)
+
+The README had drifted five versions behind and no longer matched the 2.0
+architecture; several onboarding gaps made first-run confusion likely.
+
+- **README rewritten in both languages, Chinese now the default.** `README.md`
+  is Chinese (GitHub homepage default), `README_EN.md` is the English mirror —
+  identical structure, with a language switcher at the top of each.
+  `README_CN.md` removed.
+- **New sections:** Prerequisites (Hermes + model config + gateway + workdir),
+  "What to Expect Once It's Running" (heartbeat timing — the most common false
+  alarm), Stop & Cleanup, Troubleshooting.
+- **Corrected stale content:** version header (was v1.8.8), the three
+  "motions database" references (2.0 is Kanban-backed), the tool list (18 → 20,
+  now including `agora_message` / `agora_read_chat`), and the architecture tree
+  (`motions_kanban.py` + `chat.py` / `motion.py` / `execution.py` /
+  `kanban_compat.py`).
+- **Inline changelog removed from the README** and the 14 versions it held that
+  were missing from `CHANGELOG.md` (v1.4.0–v1.8.0) were merged into it, so
+  `CHANGELOG.md` is now the single source (32 versions, 1.0.0 → 2.0.2).
+- **`plugin.yaml` manifest fix:** it declared 18 tools while the code registers
+  20 — `agora_update_project` and `agora_close_task` were missing. The manifest
+  now matches the implementation exactly.
+- **Bundled skills corrected:** `agora-setup` (prerequisites, heartbeat
+  expectation, troubleshooting entries for the dashboard tab / provider error /
+  429s), `agora-awareness` (removed the stale MEMORY.md claim), and
+  `agora-deliberation` (motion ids are Kanban task ids; the conclusion goes to
+  `task.result`, not MEMORY.md).
+
 ## [2.0.1] — 2026-09-18
 
 ### Post-release review fixes
@@ -565,6 +596,145 @@ Files changed:
 - `agora/worker_manager.py` — new `_link_global_env()` + step 1f call
 - `__init__.py` — version bump
 - `plugin.yaml` — version bump
+
+## [1.8.0] — Full code audit: motion guards, discussion quality, truncation fix, 20 bug fixes
+
+Comprehensive code review (OCR standard mode + subagent audit) identified and fixed 20 issues across 7 files:
+
+**Critical:**
+- **`agora_close_motion` adopted guard** — cannot close a motion as "adopted" with 0 discussion steps or 0 messages. Prevents leader from bypassing the discussion engine.
+- **File descriptor leak** — `log_fd` opened per heartbeat but never closed in parent process. Now closed after `Popen`.
+- **Discussion min_steps floor** — chair can no longer close/vote before `max(3, len(participants))` steps. Ensures every participant gets at least one turn.
+
+**High:**
+- **Motion threshold guidance** — SOUL.md now has explicit "Do NOT raise a motion for" list (routine assessment, stale cleanup, duplicate topics, recent stop-condition checks).
+- **Stop condition cooldown** — heartbeat prompt includes complete_count reminder to prevent re-evaluation.
+- **`_has_pending_tasks` includes blocked** — was excluding blocked tasks, causing premature "all done" signals.
+- **Tenant strip bug** — `replace("agora-", "")` → `removeprefix("agora-")` to avoid stripping interior matches.
+- **`_infer_stance` oppose matching** — substring match → regex word boundary, same as support check.
+- **`agora_close_task` missing commit** — `conn.commit()` added before `conn.close()`.
+- **chair.py f-string injection** — literal curly braces in user input no longer cause KeyError.
+- **utils.py model regex escape** — `re.escape(model)` added.
+- **reactivate cron HERMES_HOME** — already fixed in v1.7.0, confirmed applied.
+
+**Medium:**
+- **Output truncation 2000→8000** — discussion context, task context, and task body all increased from 2000 to 8000 chars.
+- **`_build_history` per-message 500→1000** — more context for chair evaluation.
+- **Unused `Optional` import** removed from driver.py.
+- **`max_steps=0` edge case** guarded.
+- **`max_steps` default detection** uses None sentinel instead of `== 30`.
+- **Misleading tool count log** corrected.
+- **`except Exception: pass`** → `logger.warning(...)` in 5 critical locations.
+- **reactivate validates `heartbeat_member`** before proceeding.
+- **Stale cleanup timestamp** added to avoid running every heartbeat.
+
+## [1.7.1] — Post-Task Skill Review: mandatory skill creation in worker SOUL.md
+
+- **Root cause of 0 self-created skills identified**: Hermes' background skill review runs as a daemon thread *after* the turn completes, but worker processes (`hermes -p <profile> --cli chat -Q -q "..."`) exit immediately after the task, killing the thread before it can run.
+- **Fix: Post-Task Skill Review section in SOUL.md** — all worker roles now have a mandatory "Before calling `kanban_complete`, review your work for reusable knowledge" step. Workers create skills *during* the task turn using `skill_manage(action='create')`, not after via a background thread.
+- Updated `worker_templates.py` (`render_soul` now appends `_POST_TASK_SKILL_REVIEW` to every role) and all 7 deployed SOUL.md files.
+- Cleaned motion record garbage from reviewer/architect/researcher/writer memory (40KB → <1KB total).
+
+## [1.7.0] — Discussion speaker tool access + chair retry + task management
+
+- **Discussion speakers now have full tool access** — changed `--toolsets agora` to `--toolsets hermes-cli` in `agent_spawn.py`. Previously, discussion participants (architect, developer, researcher, tester, reviewer, writer) only had the 17 Agora tools — no `terminal`, `read_file`, `search_files`, `web_search`, `web_extract`. This caused 112+ messages across two projects where workers reported they couldn't read code, run tests, or research reference projects. Now speakers have all built-in tools + Agora tools. *(Note: In v1.8.6, this was further refined — speakers now use the worker template toolsets: `terminal, file, web, skills, todo, session_search`, not the full `hermes-cli`.)*
+- **Chair open/evaluate retry on non-JSON** — when the chair (leader) returns a non-JSON response, the discussion driver retries once with a stronger "respond with JSON ONLY" prompt before aborting. Prevents `decision=error, steps=0` motions caused by occasional LLM formatting failures.
+- **`spawn_discussion_driver` uses global `~/.hermes/agora/`** — runner scripts and log files now always go to the global agora directory, not the profile-scoped `HERMES_HOME`. Fixes the issue where leader heartbeat created runner scripts in `~/.hermes/profiles/leader/agora/` but they couldn't be found by other processes.
+- **Stuck motion auto-cleanup** — motions stuck at `steps=0` for more than 5 minutes are now automatically closed as `error` by `_rescue_stuck_motions`. Previously these stayed in `discussing` forever, blocking leader from closing them.
+- **Kanban task counts filtered by tenant** — `_count_tasks()` now accepts a `tenant` parameter. Dashboard project list and detail views show per-project task counts instead of global totals. Fixes "kanban count not resetting" for new projects.
+- **New `agora_close_task` tool** — leader can now close stale blocked/running tasks directly (action=`complete` or `cancel`) without needing kanban CLI or `HERMES_KANBAN_TASK` env var. SOUL.md updated with stale task cleanup instructions. *(In v1.8.6, a `submit_review` action was added for code review workflow.)*
+- **`complete_count` initialized on new project** — new projects now start with `complete_count: 0` and `completion_check_pos: 0` instead of `None`.
+- **Researcher SOUL.md strengthened** — researcher must use `web_search`, `web_extract`, `terminal`, and `read_file` to investigate topics. Cannot rely on memory alone. Must read reference project source code before giving recommendations.
+
+## [1.6.2] — Leader fresh session + AGENTS.md enhancement + kanban gate
+
+- **Leader uses fresh session every heartbeat** — no more `--resume`. Accumulated session history caused attention degradation: leader repeated already-completed motions, ignored SOUL.md constraints, claimed "no running tasks" without checking. Context now comes entirely from AGENTS.md + MEMORY.md + SOUL.md.
+- **AGENTS.md enhanced** — now includes Kanban Summary (running/ready/blocked/done counts + task list), Last heartbeat timestamp, and Recent Decisions (last 3 adopted motions). Gives fresh-session leader full project state.
+- **PROJECT_COMPLETE kanban gate** — `check_project_complete` now queries kanban by tenant before counting PROJECT_COMPLETE. If running/ready/blocked tasks exist, rejects with `[SYSTEM] PROJECT_COMPLETE rejected` message in log. Multi-project safe (tenant-filtered).
+- **Cleaned worker memory** — 5 workers had ~34K chars of stale motion records (pre-v1.4.7 hooks). Cleaned to only retain technical experience.
+
+## [1.6.1] — Code audit fixes + task creation guardrails
+
+- **`start_project` reactivate now detects stale cron** — same stale-detection logic as `update_project`: verifies cron_id against `hermes cron list` before reuse.
+- **`stop_project` / `on_project_complete` clear `heartbeat_cron_id`** — previously deleted the cron job but left the stale ID in project JSON, causing reactivate to skip cron creation.
+- **Task creation guardrails in SOUL.md + heartbeat prompt** — leader must check existing tasks before creating new ones (prevent duplicates); must never assign tasks to self (leader is facilitator, not implementer).
+- **Fixed tool count in log** — 16 → 17 (agora_update_project added in v1.5.0).
+
+## [1.6.0] — Reactivate fix: reset completion state + heartbeat prompt
+
+- **Reactivate now resets `complete_count`, `leader_session_id`, `completion_check_pos`** — Previously, reactivating a completed project left stale completion state. Leader would read old memory, see complete_count > 0, and immediately output PROJECT_COMPLETE without evaluating the new goal.
+- **Heartbeat prompt warns about goal changes** — Added "If the goal or stop condition has changed since your last heartbeat, treat this as a NEW project phase. Do NOT carry over previous PROJECT_COMPLETE decisions."
+- **Reactivate verifies cron job existence** — Checks `hermes cron list` to detect stale cron IDs (deleted during PROJECT_COMPLETE but still in project JSON).
+- **`start_project` preserves existing project data** — No longer overwrites all fields when project already exists (from v1.5.9, now also in reactivate path).
+- **Schema expanded** — `agora_start_project` now accepts `description`, `stop_condition`, `team`. `workdir` no longer required for existing projects.
+- **Verified end-to-end** — Reactivated docmind project with new goal, leader correctly identified new phase, raised motions, team discussed and adopted, tasks being assigned.
+
+## [1.5.9] — Fix start_project overwriting existing project data
+
+- **`agora_start_project` no longer overwrites existing projects** — if a project already exists, it preserves all fields (team, goal, stop_condition, heartbeat_member, etc.) and only reactivates. Previously, calling `start_project` on an existing project would reset everything to defaults.
+- **Schema expanded** — added `description`, `stop_condition`, `team` parameters. `workdir` is no longer required (preserved from existing project). All new params only override if non-empty.
+- **Heartbeat cron auto-recreated** — if a reactivated project has `heartbeat_member` but no `heartbeat_cron_id`, the cron job is automatically recreated.
+
+## [1.5.8] — Dashboard project settings UI
+
+- **Project Settings panel** in dashboard Overview tab — edit goal and stop_condition inline, reactivate completed/stopped projects with one click. Calls `PUT /api/plugins/agora/projects/{name}`.
+- Added `agora-form-field` and `agora-input` CSS classes.
+
+## [1.5.7] — Hermes v0.18.2 compatibility fix
+
+- **`kanban_db.add_comment` signature changed** — now requires `author` parameter. Updated all 3 call sites in hooks.
+- Compatibility verified against Hermes v0.18.2 (2026.7.7.2):
+  - `ctx.register_tool` / `register_hook` / `register_cli_command` — unchanged ✅
+  - kanban hooks (claimed/completed/blocked) — still in VALID_HOOKS ✅
+  - `_normalize_handler_result` requires str — Agora uses `_wrap_handler` ✅
+  - `Task` class fields (tenant, body, assignee, started_at, completed_at) — unchanged ✅
+  - `create_task` / `block_task` / `get_task` — backward compatible ✅
+  - AGENTS.md context file loading — unchanged ✅
+
+## [1.5.6] — Timeout unification + tool handler fix + dashboard emoji + onboarding
+
+- **All LLM timeouts unified to 1 hour (3600s)** — speak_timeout, chair_timeout, vote, dispatch, spawn defaults. Removed `min(speak_timeout, 240)` cap. Local models with long context preprocessing need generous timeouts.
+- **Tool handler return type fix** — Hermes registry requires `str` (JSON), not `dict`. Added `_wrap_handler` / `_wrap_handler_async` at module level. All 17 tools now register and return correctly.
+- **Dashboard emoji encoding** — JS byte escapes (`\xF0\x9F`) → Unicode escapes (`\uXXXX`). Fixed garbled `ð` → `👑`.
+- **agora-setup skill** — New onboarding skill for operators (step-by-step: create workers, form teams, start projects).
+- **Dead code cleanup** — Removed `_build_active_motions_summary()` (superseded by AGENTS.md).
+
+## [1.5.2] — AGENTS.md as single source of truth + project updates
+
+- **AGENTS.md** now contains: goal, stop_condition, team members (name → role template), active discussions. Written atomically (temp + rename). Refreshed on: start_project, heartbeat, project update, motion create/close.
+- **Heartbeat prompt simplified** — 6 lines, no more inline context injection. All context via AGENTS.md auto-load.
+- **`agora_update_project` tool** — change goal/stop_condition mid-flight. `reactivate=true` restarts completed projects.
+- **Motion memory cleanup** — decision records only written to leader's MEMORY.md, not workers. Workers keep their own technical experience.
+- **Skill creation nudge** — complex tasks (>1 run or >30min) get a kanban comment prompting the worker to save reusable workflows.
+- **17 tools** (added `agora_update_project`).
+
+## [1.4.4–1.4.6] — Code audit fixes
+
+- Chair prompt: prevent false truncation calls
+- Driver: MAX_SAME_SPEAKER=2 hard limit
+- `_has_pending_tasks()` now accepts project_name with tenant filter
+- SQLite busy_timeout=5000 for concurrent safety
+- `_find_project_for_task()` uses task.tenant instead of string matching
+- Worker session JSON uses fcntl.flock for concurrent safety
+- Stale discussion_state cleanup on every heartbeat
+- Session manager queries profile-specific state.db
+- 15 issues fixed across 3 releases
+
+## [1.4.3] — Discussion state consistency and stale motion recovery
+
+- `discussion_state` cleaned on close
+- Stuck discussions with messages recovered
+- `agora_close_motion` tool added
+- Speaker session preserved on timeout
+- Timeout increased (900s/300s)
+
+## [1.4.0–1.4.2] — Discussion engine reliability
+
+- Session-not-found recovery
+- Empty tool argument handling
+- Stale memory poisoning fix
+- Dead session cleanup
+- Code cleanup and hardcoded path fixes
 
 ## [1.3.0] — 2026-07-05
 

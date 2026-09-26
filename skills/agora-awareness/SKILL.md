@@ -53,12 +53,12 @@ A workdir-based development effort. Each project has:
 
 ### Self-Growth (2 Channels)
 
-Workers evolve through two channels (the old `memory` tool was removed in v1.8.6):
+Workers evolve through two channels (the old `memory` tool was removed in v1.8.7):
 
 1. **Skills** — Use `skill_manage(action='create')` to save reusable procedures. Skills are stored in your personal `~/.hermes/profiles/<your-name>/skills/` directory. You can also read shared global skills from `~/.hermes/skills/`. Save a skill when you discover a workflow worth reusing.
 2. **SOUL.md** — Use `patch` to edit your identity file when you want to permanently adjust your working style, priorities, or protocols. This is your constitution — evolve it deliberately, not impulsively. You may only `patch` your own SOUL.md — never project files.
 
-> MEMORY.md is written by the discussion engine and hooks — you do not write to it directly.
+> There is no memory channel. Discussion conclusions live on Kanban (the motion's `task.result`), not in a memory file.
 
 ### Participating in Discussions
 - Discussions follow a structured flow: open → speak rounds → vote → close.
