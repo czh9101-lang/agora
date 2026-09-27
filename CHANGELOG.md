@@ -2,6 +2,23 @@
 
 All notable changes to the Agora plugin are documented here.
 
+## [2.0.3] — 2026-09-27
+
+### Catalog admission: security-scan clean
+
+`hermes plugins validate` exited 1 on two `dangerous` findings, which would
+fail the plugin-catalog CI gate. Both are fixed:
+
+- **invisible_unicode × 6** — the ZWJ (U+200D) inside the 👨‍💼 emoji tripped the
+  scanner. Replaced with 👑 (single codepoint) in the leader template, the
+  dashboard bundle, and both READMEs.
+- **agent_config_mod_shell** — a docs line spelled the project context file's
+  path with an angle-bracket workdir placeholder; the placeholder's closing
+  bracket read as a shell redirect into that file. Reworded.
+
+Verified: `hermes plugins validate` → exit 0, all 13 checks pass,
+security scan: safe.
+
 ## [2.0.2] — 2026-09-27
 
 ### Docs rewrite + manifest fix (onboarding pass)
