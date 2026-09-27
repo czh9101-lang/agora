@@ -190,7 +190,7 @@ __init__.py (register)
 | `~/.hermes/scripts/leader_heartbeat.sh` | Heartbeat cron script |
 | `~/.hermes/skills/collaboration/agora-awareness/` | Deployed skill |
 | `~/.hermes/skills/collaboration/agora-deliberation/` | Deployed skill |
-| `<workdir>/AGENTS.md` | Project context file (auto-injected by Hermes) |
+| `AGENTS.md` (written to the project workdir) | Project context file (auto-injected by Hermes) |
 
 ---
 

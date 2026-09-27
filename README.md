@@ -56,7 +56,7 @@ Hermes 会读取 `agora-setup` skill 并完成整个流程：
 
 | 模板 | 图标 | 职责 |
 |------|------|------|
-| Team Leader | 👨‍💼 | 项目管理、讨论主持、完成判定（必需） |
+| Team Leader | 👑 | 项目管理、讨论主持、完成判定（必需） |
 | Architect | 🏗️ | 系统设计、API 契约、技术选型 |
 | Developer | 💻 | 实现、测试、依赖管理 |
 | Reviewer | 🔍 | 代码审查、安全、边界情况 |

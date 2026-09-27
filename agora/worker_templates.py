@@ -529,7 +529,7 @@ TEMPLATES: dict[str, dict] = {
     "leader": {
         "role": "leader",
         "display_name": "Team Leader",
-        "icon": "👨‍💼",
+        "icon": "👑",
         "description": "Monitors project health, unblocks stuck tasks, plans next phases. The self-driving heartbeat of the team.",
         "soul_template": _LEADER_SOUL,
         "skills": [],

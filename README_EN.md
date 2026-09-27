@@ -56,7 +56,7 @@ Open `hermes dashboard` → **Agora** tab → **Team → Members**:
 
 | Template | Icon | Responsibility |
 |----------|------|----------------|
-| Team Leader | 👨‍💼 | Project management, discussion chair, completion detection (required) |
+| Team Leader | 👑 | Project management, discussion chair, completion detection (required) |
 | Architect | 🏗️ | System design, API contracts, tech selection |
 | Developer | 💻 | Implementation, testing, dependencies |
 | Reviewer | 🔍 | Code review, security, edge cases |
