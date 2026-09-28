@@ -699,19 +699,22 @@ def _handle_create_task(ctx: Any, args: dict) -> dict:
     project = args.get("project", "")
     status = args.get("status", "ready")
 
-    # Determine the kanban board/tenant for this project
+    # Determine the kanban board/tenant for this project. Must go through the
+    # same helper the project registry uses: assembling the prefix here would
+    # not match the board for any name safe_name() rewrites (spaces, "/"), and
+    # the task would then fall outside the project's scope — missing from status
+    # counts, skipped by stop_project's cleanup, refused by agora_close_task.
+    from ..project_planner import agora_board_for
     tenant = None
     if project:
-        tenant = f"agora-{project}"
+        tenant = agora_board_for(project)
     else:
         # Try to detect the active project from the registry
         try:
             from ..project_planner import list_projects
             for p in list_projects():
                 if p.get("status") == "active":
-                    tenant = p.get("board") or p["name"]
-                    if not tenant.startswith("agora-"):
-                        tenant = f"agora-{tenant}"
+                    tenant = p.get("board") or agora_board_for(p.get("name", ""))
                     break
         except Exception:
             pass

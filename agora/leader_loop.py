@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .utils import find_hermes_binary, now_iso, get_registry_dir, safe_name
-from ..project_planner import project_allows_unattended
+from ..project_planner import project_allows_unattended, agora_board_for
 
 logger = logging.getLogger(__name__)
 
@@ -502,7 +502,7 @@ def check_project_complete(project_name: str) -> bool:
 
         # PROJECT_COMPLETE found in new output
         # Verify kanban is actually clean — no running/ready/blocked tasks for this project
-        board_name = f"agora-{safe_name(project_name)}"
+        board_name = agora_board_for(project_name)
         _pending: list = []
         _ready: list = []
         _blocked: list = []

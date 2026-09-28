@@ -103,7 +103,7 @@ def _ensure_project_board(project_name: str) -> str:
 
     Returns the board name (used as kanban tenant for project isolation).
     """
-    board_name = f"agora-{safe_name(project_name)}"
+    board_name = agora_board_for(project_name)
     logger.info("Project board ensured: %s", board_name)
     return board_name
 
@@ -219,7 +219,7 @@ def update_project_agents_md(project_name: str) -> dict:
     # task it creates, so anything without one belongs to another producer.
     try:
         from .agora.kanban_compat import kanban_db as _kdb
-        board = proj.get("board") or f"agora-{safe_name(project_name)}"
+        board = proj.get("board") or agora_board_for(project_name)
         _conn = _kdb.connect()
         try:
             # Scope strictly to this project's board: Agora always sets
@@ -743,7 +743,7 @@ def stop_project(project_name: str) -> dict:
     # Without this, old tasks remain and confuse the leader on restart.
     try:
         from .agora.kanban_compat import kanban_db as _kdb
-        board = f"agora-{safe_name(project_name)}"
+        board = agora_board_for(project_name)
         conn = _kdb.connect()
         try:
             # Strict tenant scope — never delete tasks that merely lack a tenant.
@@ -1089,7 +1089,7 @@ def on_project_complete(project_name: str) -> None:
         # PROJECT_COMPLETE immediately because "all tasks are done".
         try:
             from .agora.kanban_compat import kanban_db as _kdb
-            board = f"agora-{safe_name(project_name)}"
+            board = agora_board_for(project_name)
             conn = _kdb.connect()
             try:
                 # Get all task IDs for this project
@@ -1241,7 +1241,7 @@ def _has_pending_tasks(project_name: str | None = None) -> bool:
         conn = kanban_db.connect()
         try:
             if project_name:
-                tenant = f"agora-{project_name}"
+                tenant = agora_board_for(project_name)
                 rows = conn.execute(
                     "SELECT COUNT(*) as n FROM tasks WHERE status IN ('todo', 'ready', 'running', 'blocked') AND tenant = ?",
                     (tenant,),

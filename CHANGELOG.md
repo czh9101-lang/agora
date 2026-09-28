@@ -2,6 +2,61 @@
 
 All notable changes to the Agora plugin are documented here.
 
+## [2.0.5] — 2026-09-28
+
+### Documentation-driven audit: board names and two scan traps
+
+Rewriting `MODULE_DEPENDENCIES.md` from the source (rather than by hand) meant
+extracting every import, path and environment read with an AST walker. Two things
+that survived the code path for a long time fell out of that.
+
+**Board names had more than one construction site**
+
+The board (kanban tenant) for a project is `agora-<safe_name(project)>`, and
+`safe_name()` rewrites spaces and `/`. Four places assembled the prefix directly
+from the *raw* project name:
+
+- `agora_create_task` — a task created with `project="My Project"` got tenant
+  `agora-My Project` while the project's board is `agora-My_Project`.
+- `stop_project`/restart cleanup and the status counters read from the task
+  table, so such a task was **invisible** to project status, **not deleted** when
+  the project stopped, and **refused** by `agora_close_task` (ownership check).
+- The dashboard's task counts and board lookup had the same split.
+
+All of them now go through `project_planner.agora_board_for`, the single
+construction site, and a test asserts no literal `agora-` f-string comes back.
+
+**A missing lazy import**
+
+The dashboard's board lookup referenced `agora_board_for` without importing it in
+that function's scope — a `NameError` on the project-detail route. The existing
+tests do not exercise the dashboard, so nothing caught it; the static check does
+now.
+
+**One more self-inflicted security-scan trip**
+
+`hermes plugins validate` fails the build on `agent_config_mod_shell`, which
+matches `>` immediately before a path ending in `AGENTS.md`. An angle-bracket
+placeholder is the natural way to write a path in a doc, and it trips the rule —
+the file-paths table in the rewritten `MODULE_DEPENDENCIES.md` did. Reworded, and
+a test now scans every shipped text file for the pattern so a documentation change
+cannot silently fail the catalog CI (the same trap hit this project once before,
+in `MODULE_DEPENDENCIES.md` and then in the changelog describing it).
+
+### `MODULE_DEPENDENCIES.md` rewritten
+
+The document was five versions stale and described the pre-2.0 layout. It is now
+generated from the source: the real import graph with module-level vs lazy edges,
+the actual kanban symbol call sites, the subprocess table, every path read or
+written (with the global-vs-active home distinction that the registries and the
+cron job depend on), and the environment variables — including that `HERMES_HOME`
+is never read directly, only resolved through `hermes_constants`. It documents the
+one genuinely mutual import group (`project_planner` / `leader_loop` /
+`team_manager`) and why those edges are lazy, plus the leaf modules that are safe
+to extend. The regeneration procedure is at the end of the file.
+
+**Tests:** 59 passing.
+
 ## [2.0.4] — 2026-09-28
 
 ### Catalog admission: review follow-up

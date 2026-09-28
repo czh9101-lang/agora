@@ -284,3 +284,70 @@ def test_discussion_runner_is_valid_python(tmp_path, monkeypatch):
     body = runner.read_text()
     assert "from hermes_plugins.agora.agora.discussion.driver import DiscussionDriver" in body
     assert "sys.path.insert" not in body
+
+
+# --------------------------------------------------------------------------- #
+# Board names come from one place                                             #
+# --------------------------------------------------------------------------- #
+
+def test_agora_board_for_normalizes_project_names():
+    assert project_planner.agora_board_for("doc-mind") == "agora-doc-mind"
+    # A name safe_name() rewrites must still produce the registry's board:
+    # otherwise the task lands outside the project's scope.
+    assert project_planner.agora_board_for("My Project") == "agora-My_Project"
+    assert project_planner.agora_board_for("a/b") == "agora-a-b"
+
+
+def test_board_names_have_a_single_construction_site():
+    """Nothing may hand-build a board name.
+
+    `agora_board_for` is the one place `agora-<project>` is assembled. A second
+    construction site that skips `safe_name()` silently creates tasks the
+    project cannot see, clean up or close.
+    """
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        if "__pycache__" in path.parts or "tests" in path.parts:
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r'''f"agora-\{''', line) or re.search(r'''f'agora-\{''', line):
+                offenders.append(f"{path.relative_to(root)}:{lineno}")
+    assert not offenders, (
+        "build board names with project_planner.agora_board_for(); "
+        f"found literal construction at {offenders}"
+    )
+
+
+def test_nothing_trips_the_agent_config_shell_scan():
+    """No file may contain a shell redirect into the agent context file.
+
+    `hermes plugins validate`'s security scan reads `<x> > .../AGENTS.md` as a
+    shell write into the agent's context file and fails the build on it. An
+    angle-bracket placeholder immediately before the filename trips it
+    (`<workdir>/AGENTS.md`), which is easy to write by accident in docs — so
+    this scans every shipped text file, not just the sources.
+    """
+    import re
+
+    # Same shape the scanner looks for. Tests are excluded: this file spells the
+    # pattern out on purpose.
+    pattern = re.compile(r'[\w"\'`)\]]\s*>\s*[~\w./-]*' + "AGENTS" + r"\.md")
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or ".git" in path.parts:
+            continue
+        if "tests" in path.parts:
+            continue
+        if path.suffix not in (".md", ".py", ".js", ".yaml", ".txt", ".json"):
+            continue
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if pattern.search(line):
+                offenders.append(f"{path.relative_to(root)}:{lineno}")
+    assert not offenders, (
+        "these lines trip the security scan's agent_config_mod_shell rule; "
+        f"write the context-file path without a preceding `>`: {offenders}"
+    )

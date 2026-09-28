@@ -734,7 +734,7 @@ def _count_tasks(tenant: str = "") -> dict:
 def list_projects_api():
     """List all Agora projects with cron status and task counts."""
     try:
-        from ..project_planner import list_projects, get_cron_status
+        from ..project_planner import list_projects, get_cron_status, agora_board_for
         projects = list_projects()
         for proj in projects:
             proj_name = proj.get("name", "")
@@ -747,7 +747,7 @@ def list_projects_api():
                         proj["heartbeat_minutes"] = int(sched[6:-1])
                     except (ValueError, IndexError):
                         pass
-                proj["task_counts"] = _count_tasks(tenant=proj.get("board") or f"agora-{proj_name}")
+                proj["task_counts"] = _count_tasks(tenant=proj.get("board") or agora_board_for(proj_name))
         return {"projects": projects}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -757,7 +757,7 @@ def list_projects_api():
 def get_project_api(name: str):
     """Get project detail with cron status and task counts."""
     try:
-        from ..project_planner import get_project, get_cron_status
+        from ..project_planner import get_project, get_cron_status, agora_board_for
         proj = get_project(name)
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
@@ -772,7 +772,7 @@ def get_project_api(name: str):
                 proj["heartbeat_minutes"] = int(sched[6:-1])
             except (ValueError, IndexError):
                 pass
-        proj["task_counts"] = _count_tasks(tenant=proj.get("board") or f"agora-{name}")
+        proj["task_counts"] = _count_tasks(tenant=proj.get("board") or agora_board_for(name))
         return proj
     except HTTPException:
         raise
@@ -908,13 +908,13 @@ def get_project_tasks_api(name: str):
     """
     try:
         import sqlite3
-        from ..project_planner import get_project
+        from ..project_planner import get_project, agora_board_for
 
         proj = get_project(name)
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
 
-        board = proj.get("board", f"agora-{name}")
+        board = proj.get("board") or agora_board_for(name)
 
         # Try the kanban board API first
         try:
