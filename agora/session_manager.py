@@ -105,7 +105,7 @@ def _heuristic_activity_count(worker_name: str) -> int:
 
     # Count completed kanban tasks assigned to this worker
     try:
-        from agora.kanban_compat import kanban_db
+        from .kanban_compat import kanban_db
         conn = kanban_db.connect()
         try:
             row = conn.execute(

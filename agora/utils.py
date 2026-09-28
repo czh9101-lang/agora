@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,23 @@ def get_global_root() -> Path:
         return home
     except Exception:
         return Path.home() / ".hermes"
+
+
+def get_hermes_root() -> Path:
+    """Return the resolved Hermes home (context override → HERMES_HOME → default).
+
+    Unlike :func:`get_global_root`, this is never unwound out of a profile
+    directory, so it names the active home exactly.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception:
+        return Path.home() / ".hermes"
+
+
+#: Public alias — the active Hermes home.
+hermes_home_path = get_hermes_root
 
 
 def get_registry_dir(name: str) -> Path:
@@ -56,15 +74,20 @@ def get_profiles_root() -> Path:
 
 
 def find_hermes_binary() -> str:
-    """Find the hermes executable."""
-    candidates = [
-        os.environ.get("HERMES_BIN", ""),
-        "/usr/local/lib/hermes-agent/venv/bin/hermes",
-        "/home/ubuntu/.hermes/hermes-agent/venv/bin/hermes",
-        "/root/.hermes/hermes-agent/venv/bin/hermes",
-        "/usr/local/bin/hermes",
-        "/usr/bin/hermes",
-    ]
+    """Locate the ``hermes`` executable without hardcoding install layouts.
+
+    Order: ``HERMES_BIN`` override → sibling of the running interpreter (a venv
+    ``bin/hermes`` next to ``bin/python3``) → ``<hermes_home>/hermes-agent/`` →
+    ``PATH``. Falls back to the bare name so a mis-resolved path degrades to a
+    normal lookup failure rather than running an unrelated binary.
+    """
+    candidates: list[str] = [os.environ.get("HERMES_BIN", "")]
+
+    # A venv install puts `hermes` next to the interpreter shelling us out.
+    candidates.append(str(Path(sys.executable).parent / "hermes"))
+    # Dev/managed installs keep the checkout under the Hermes home.
+    candidates.append(str(get_hermes_root() / "hermes-agent" / "venv" / "bin" / "hermes"))
+
     for c in candidates:
         if c and os.path.isfile(c) and os.access(c, os.X_OK):
             return c

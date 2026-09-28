@@ -1,8 +1,8 @@
 """Tests for agora.discussion.driver.DiscussionDriver."""
 from __future__ import annotations
 
-from agora.discussion.driver import DiscussionDriver
-from agora.utils import parse_json_response
+from hermes_plugins.agora.agora.discussion.driver import DiscussionDriver
+from hermes_plugins.agora.agora.utils import parse_json_response
 
 
 def test_driver_init():

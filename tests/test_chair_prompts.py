@@ -1,7 +1,7 @@
 """Tests for agora.discussion.chair prompt formatting."""
 from __future__ import annotations
 
-from agora.discussion.chair import (
+from hermes_plugins.agora.agora.discussion.chair import (
     CHAIR_OPENING_PROMPT,
     build_speaker_prompt,
     build_vote_prompt,

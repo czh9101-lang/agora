@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _conn():
-    from agora.kanban_compat import kanban_db as _kb
+    from ..kanban_compat import kanban_db as _kb
     return _kb.connect()
 
 
@@ -33,7 +33,7 @@ def _resolve_chat_root(chat_root_id: str, project: str) -> str:
         return chat_root_id
     if not project:
         raise ValueError("chat_root_id or project is required to locate the team channel")
-    from project_planner import get_project
+    from ...project_planner import get_project
     proj = get_project(project)
     if not proj:
         raise ValueError(f"project '{project}' not found")
@@ -45,7 +45,7 @@ def _resolve_chat_root(chat_root_id: str, project: str) -> str:
 
 def get_motion(motion_id: str) -> Optional[dict[str, Any]]:
     """Fetch a motion view in the 1.x field shape (discussing/closed status)."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         view = _m.get_motion(conn, motion_id)
@@ -99,7 +99,7 @@ def create_motion(
     ``chat_root_id`` is required (the team channel anchor); callers that only
     know the project name should resolve it first (project JSON ``chat_root_id``).
     """
-    from agora import motion as _m
+    from .. import motion as _m
     chat_root_id = _resolve_chat_root(chat_root_id, project)
     conn = _conn()
     try:
@@ -135,7 +135,7 @@ def list_motions(
     When neither ``chat_root_id`` nor ``project`` is given, aggregates across
     all active projects (the 1.x "global list" behaviour for CLI/dashboard).
     """
-    from agora import motion as _m
+    from .. import motion as _m
     if not (chat_root_id or project):
         return list_all_motions(status_filter=status_filter, limit=limit)
     chat_root_id = _resolve_chat_root(chat_root_id, project)
@@ -149,9 +149,9 @@ def list_motions(
 
 def list_all_motions(status_filter: str = "all", limit: int = 100) -> list[dict[str, Any]]:
     """List motions across all active projects (for CLI/dashboard global views)."""
-    from agora import motion as _m
+    from .. import motion as _m
     try:
-        from project_planner import list_projects
+        from ...project_planner import list_projects
     except Exception:
         return []
     out: list[dict[str, Any]] = []
@@ -180,7 +180,7 @@ def update_motion_status(
     action_items: Optional[list[str]] = None,
 ) -> None:
     """Close a motion (only closing is supported on the Kanban backend)."""
-    from agora import motion as _m
+    from .. import motion as _m
     if status != "closed":
         # Kanban motions are either discussing (running) or done; there is no
         # intermediate status to persist. Ignore non-closing transitions.
@@ -194,7 +194,7 @@ def update_motion_status(
 
 def update_motion_state(motion_id: str, state: str) -> None:
     """Update the motion's discussion state (discussing/voting/summarizing/closed)."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         _m.update_state(conn, motion_id=motion_id, state=state)
@@ -210,7 +210,7 @@ def save_discussion_state(
     last_action: Optional[str] = None,
 ) -> None:
     """Persist the discussion state (next speaker, guidance, action)."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         _m.update_state(
@@ -227,7 +227,7 @@ def save_discussion_state(
 
 def get_discussion_state(motion_id: str) -> Optional[dict[str, Any]]:
     """Return the current discussion state, or None if the motion is gone."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         m = _m.get_motion(conn, motion_id)
@@ -247,7 +247,7 @@ def get_discussion_state(motion_id: str) -> Optional[dict[str, Any]]:
 
 def increment_step_count(motion_id: str) -> int:
     """Increment and return the discussion step count."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         return _m.increment_step_count(conn, motion_id)
@@ -266,7 +266,7 @@ def add_message(
     is_chair: bool = False,
 ) -> str:
     """Record one discussion message (speech, guidance, vote call, …)."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         cid = _m.add_speech(
@@ -287,7 +287,7 @@ def add_message(
 
 def get_messages(motion_id: str, round_num: Optional[int] = None) -> list[dict[str, Any]]:
     """Return all discussion messages (1.x shape: role/is_chair/step_type/content)."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         msgs = _m.get_all_messages(conn, motion_id)
@@ -321,7 +321,7 @@ def add_vote(
     confidence: float = 0.8,
 ) -> str:
     """Record one vote."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         cid = _m.add_vote(conn, motion_id=motion_id, role=role, vote=vote, reason=reason, confidence=confidence)
@@ -332,7 +332,7 @@ def add_vote(
 
 def get_votes(motion_id: str) -> list[dict[str, Any]]:
     """Return all votes (1.x shape: role/vote/reason)."""
-    from agora import motion as _m
+    from .. import motion as _m
     conn = _conn()
     try:
         votes = _m.get_votes(conn, motion_id)

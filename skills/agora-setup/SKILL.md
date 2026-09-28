@@ -15,7 +15,9 @@ workers, forming a team, and starting a self-driving project.
 
 - Hermes Agent installed and running (v0.20.x or newer recommended)
 - Agora plugin enabled (`hermes plugins enable agora` + restart **both** gateway and dashboard)
-- A model/provider configured — workers inherit the global `config.yaml` and `.env`
+- Bundled skills deployed — `hermes agora setup` (also happens automatically on
+  `agora_start_project`; installing the plugin itself writes nothing)
+- A model/provider configured — each worker profile copies the global `config.yaml` and `.env` at creation
 - The gateway running — it hosts the kanban dispatcher that spawns workers
 
 ## Quick Start (3 Steps)
@@ -84,11 +86,25 @@ agora_start_project(
     stop_condition="All endpoints tested and documented",
     heartbeat_member="leader",   # who wakes on heartbeat
     heartbeat_minutes=30,        # heartbeat interval
+    allow_unattended=True,       # let workers write code (see below)
 )
 ```
 
 That's it. The leader will wake up on the next heartbeat, read AGENTS.md
 for project context, and start working autonomously.
+
+> **`allow_unattended` — decide this before starting.** Workers and the leader
+> run as `hermes -p <profile> chat -Q -q` subprocesses. A `-q` invocation has
+> nobody present to answer an approval prompt, so **without this flag their
+> flagged actions fail closed**: they can read, search, discuss and plan, but
+> cannot write files or run commands — a team that only talks.
+>
+> Passing `allow_unattended=True` adds `--yolo --accept-hooks` to every worker
+> and leader subprocess for that project. Do it only for a workdir you are
+> willing to let agents modify unattended, and say so when you set it up.
+> Default is `False`; the flag is stored on the project (`allow_unattended`) and
+> can be enabled later by re-running `agora_start_project` for that name with
+> `allow_unattended=True`.
 
 ## What Happens Next
 
@@ -199,6 +215,10 @@ agora_raise_motion(
 - **Nothing happens after starting?** Normal for up to one heartbeat interval
   (default 15 min) — the leader is only woken at heartbeat time. Check
   `hermes cron list` for `heartbeat-<project_name>`, or Trigger manually.
+- **Workers discuss and plan but never write files or run commands?** The
+  project was started without `allow_unattended`, so their flagged actions fail
+  closed. Re-run `agora_start_project` for that name with
+  `allow_unattended=True` (or use the Dashboard's project settings).
 - **Workers not picking up tasks?** Check that the gateway is running and
   the kanban dispatcher is active: `hermes gateway status`
 - **Discussions not starting?** Check that the leader has `agora` toolset
@@ -208,7 +228,7 @@ agora_raise_motion(
 - **No Agora tab in the dashboard?** You restarted only the gateway —
   the dashboard discovers plugin tabs at startup: `hermes dashboard restart`.
 - **Worker says "No inference provider configured"?** The global model config
-  is missing, or the profile's `.env` symlink broke. Check `~/.hermes/.env`
+  is missing, or its `.env` never reached the profile. Check `~/.hermes/.env`
   and `~/.hermes/profiles/<name>/.env`.
 - **Worker crashing repeatedly with 429/503?** API rate limiting. Set
   `api_max_retries` (e.g. 50) on the worker profile, or globally

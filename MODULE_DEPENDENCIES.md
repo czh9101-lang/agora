@@ -9,7 +9,6 @@ Agora is a Hermes Agent plugin. It depends on Hermes core for:
 - Kanban task database (`hermes_cli.kanban_db`)
 - Profile management (`hermes_cli.profiles`)
 - Hermes constants (`hermes_constants.get_hermes_home`)
-- Memory store (`tools.memory_tool` / `hermes_cli.memory_tool`) — used by hooks to write to leader's MEMORY.md only
 - Hermes CLI binary (subprocess calls for agent spawning and cron management)
 - FastAPI + Pydantic (dashboard API, provided by Hermes dashboard runtime)
 
@@ -68,15 +67,13 @@ Profile management. Used in `dashboard/plugin_api.py` only:
 |----------|---------|---------|
 | `get_hermes_home()` | `utils.py`, `storage/motions.py` | Get `~/.hermes` path |
 
-### `tools.memory_tool` / `hermes_cli.memory_tool`
+### Memory store — not a dependency
 
-| Class | Used in | Purpose |
-|-------|---------|---------|
-| `MemoryStore` | `hooks/__init__.py` | Write motion decisions to leader's MEMORY.md only (not workers) |
-
-> **Note (v1.8.6+):** Workers no longer have the `memory` tool in their toolsets. MEMORY.md is written only by the discussion engine (`driver._write_participant_memories`) and hooks (`_write_to_memory` for leader). Worker Self-Growth uses 2 channels: **Skills** (`skill_manage`) + **SOUL.md** (`patch`).
-
-Import has fallback: tries `tools.memory_tool` first, then `hermes_cli.memory_tool`.
+Agora does **not** import `tools.memory_tool` / `hermes_cli.memory_tool`. Worker
+Self-Growth has two channels: **Skills** (`skill_manage`) and **SOUL.md**
+(`patch`). Discussion conclusions are written to the motion task's `result`;
+nothing in the plugin writes MEMORY.md (the file may still exist because Hermes
+core maintains it per profile).
 
 ### Hermes CLI Binary (`hermes`)
 
@@ -84,8 +81,8 @@ Located via `find_hermes_binary()` in `utils.py`. Subprocess calls:
 
 | Command | Used in | Purpose |
 |---------|---------|---------|
-| `hermes -p <profile> --yolo --accept-hooks --toolsets hermes-cli chat -Q -q <prompt>` | agent_spawn.py | Spawn worker/leader for discussion (v1.7.0+: full toolset) |
-| `hermes -p <profile> --yolo --accept-hooks --toolsets file,web,skills,todo,session_search,agora chat -Q -q <prompt>` | leader_loop.py | Spawn leader for heartbeat (v1.8.5+: restricted, no terminal) |
+| `hermes -p <profile> [--yolo --accept-hooks] --toolsets hermes-cli chat -Q -q <prompt>` | agent_spawn.py | Spawn a discussion speaker. The bypass flags are added **only** when the project set `allow_unattended`; without them a `-q` session has no approver and flagged actions fail closed |
+| `hermes -p <profile> [--yolo --accept-hooks] --toolsets file,web,skills,todo,session_search,agora chat -Q -q <prompt>` | leader_loop.py | Spawn the leader for a heartbeat (restricted toolset, no terminal). Same `allow_unattended` gate |
 | `hermes cron create <schedule> --name <name> --no-agent --script <path> --deliver local` | project_planner.py | Create heartbeat cron job |
 | `hermes cron remove <job_id>` | project_planner.py | Remove heartbeat cron |
 | `hermes cron edit <job_id> --schedule <schedule>` | project_planner.py | Update heartbeat interval |
@@ -117,7 +114,7 @@ Used in `utils.py`, `worker_manager.py`, `dashboard/plugin_api.py` for reading/w
 
 ```
 __init__.py (register)
-├── tools/__init__.py (register_all_tools — 18 tools)
+├── tools/__init__.py (register_all_tools — 20 tools)
 │   ├── agora.storage.motions (db)
 │   ├── project_planner (start/stop/update/status)
 │   ├── agora.worker_manager (create/list/remove workers)
@@ -127,8 +124,7 @@ __init__.py (register)
 ├── hooks/__init__.py (register_hooks)
 │   ├── agora.storage.motions (db)
 │   ├── project_planner (on_task_completed)
-│   ├── agora.worker_manager (get_worker — check is_leader)
-│   └── tools.memory_tool / hermes_cli.memory_tool (MemoryStore)
+│   └── agora.worker_manager (get_worker — check is_leader)
 ├── cli.py (setup_agora_cli, handle_agora_cli)
 │   └── agora.storage.motions (db)
 └── dashboard/plugin_api.py (router)
@@ -164,8 +160,8 @@ __init__.py (register)
 |--------|-----------|---------|
 | `project_planner.py` | agora.utils, agora.worker_manager, agora.team_manager, agora.leader_loop, hermes_cli.kanban_db | Project lifecycle: start, stop, update, delete. Heartbeat cron management. AGENTS.md generation (atomic write). `on_project_complete` deletes all project kanban tasks. |
 | `cli.py` | agora.storage.motions | `hermes agora` CLI subcommand |
-| `hooks/__init__.py` | agora.storage.motions, project_planner, agora.worker_manager, hermes_cli.kanban_db, tools.memory_tool | 3 kanban hooks: completed, claimed, blocked |
-| `tools/__init__.py` | agora.storage.motions, project_planner, agora.worker_manager, agora.team_manager, agora.discussion.agent_spawn, agora.discussion.roles, hermes_cli.kanban_db | 18 tool definitions + `/agora` slash command. `agora_close_task` supports `complete`, `cancel`, `submit_review` actions. |
+| `hooks/__init__.py` | agora.storage.motions, project_planner, agora.worker_manager, hermes_cli.kanban_db | 3 kanban hooks: completed, claimed, blocked |
+| `tools/__init__.py` | agora.storage.motions, project_planner, agora.worker_manager, agora.team_manager, agora.discussion.agent_spawn, agora.discussion.roles, hermes_cli.kanban_db | 20 tool definitions + `/agora` slash command. `agora_close_task` supports `complete`, `cancel`, `submit_review` actions. |
 | `dashboard/plugin_api.py` | agora.storage.motions, project_planner, agora.worker_manager, agora.team_manager, agora.discussion.agent_spawn, agora.utils, hermes_cli.profiles, hermes_cli.kanban_db, fastapi, pydantic, yaml | REST API for dashboard |
 
 ---
@@ -179,10 +175,10 @@ __init__.py (register)
 | `~/.hermes/profiles/<name>/state.db` | Profile-specific session database |
 | `~/.hermes/profiles/<name>/config.yaml` | Worker profile config |
 | `~/.hermes/profiles/<name>/SOUL.md` | Worker identity |
-| `~/.hermes/profiles/<name>/memories/MEMORY.md` | Worker memory |
+| `~/.hermes/profiles/<name>/memories/MEMORY.md` | Maintained by Hermes core, not by Agora |
 | `~/.hermes/profiles/<name>/skills/` | Worker skills directory |
 | `~/.hermes/profiles/<name>/plugins/` | Symlinked plugins (agora visible to workers) |
-| `~/.hermes/agora/motions.db` | Agora motions/messages/votes/discussion_state |
+| `~/.hermes/agora/motions.db` | Legacy 1.x store — not written by 2.0 (state lives in the kanban DB) |
 | `~/.hermes/agora/projects/<name>.json` | Project registry |
 | `~/.hermes/agora/workers/<name>.json` | Worker registry |
 | `~/.hermes/agora/teams/<name>.json` | Team registry |
@@ -209,7 +205,12 @@ __init__.py (register)
 
 ## SQLite Schemas
 
-### `motions.db` (Agora-owned)
+### `motions.db` — legacy (1.x only)
+
+> **2.0 does not read or write this database.** Discussion state lives on the
+> kanban board: a motion is a task, speech/votes are `[agora:msg]` comments, and
+> the conclusion is `task.result`. The schema below is kept for the legacy 1.x
+> store that `agora/storage/motions.py` still serves to outside consumers.
 
 ```sql
 -- motions table
@@ -291,4 +292,9 @@ Tables used: `tasks`, `task_runs`, `task_comments`, `boards`
 | v1.7.0 | v0.18+ | Discussion speakers use `hermes-cli` toolset (full tools); chair retry on non-JSON; `agora_close_task` tool; kanban tenant filtering; `complete_count` init; researcher SOUL.md enforces tool usage |
 | v1.4.x | v0.17+ | Basic plugin API, no CLI command |
 
-Hermes backward compatibility: Agora uses try/except fallbacks for optional imports (FastAPI, memory_tool path).
+Hermes backward compatibility: Agora uses try/except fallbacks for optional imports (FastAPI, the pre/post-September `kanban_db` module layout).
+
+Import style: every module in the plugin reaches its siblings through relative
+imports inside the `hermes_plugins.agora` package. The plugin root is never added
+to `sys.path` — it contains `tools/`, `hooks/` and `skills/`, which core also has,
+and putting it there would shadow those packages.

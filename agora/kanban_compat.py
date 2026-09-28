@@ -17,7 +17,7 @@ Usage — replace::
 
 with::
 
-    from agora.kanban_compat import kanban_db
+    from .kanban_compat import kanban_db
     conn = kanban_db.connect()
 
 The returned object is a namespace-like bridge exposing every symbol from the

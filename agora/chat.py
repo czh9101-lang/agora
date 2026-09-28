@@ -33,7 +33,7 @@ import json
 import logging
 from typing import Any, Iterable, Optional
 
-from agora.kanban_compat import kanban_db as kb
+from .kanban_compat import kanban_db as kb
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def ensure_chat_root(
     as initial_status) and immediately parked to ``scheduled`` so the
     dispatcher never claims it and ``recompute_ready`` never promotes it.
     """
-    from agora.kanban_compat import kanban_db as _kb
+    from .kanban_compat import kanban_db as _kb
 
     root_id = _kb.create_task(
         conn,

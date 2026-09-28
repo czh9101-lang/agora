@@ -8,14 +8,11 @@ from pathlib import Path
 
 import pytest
 
-_AGORA_ROOT = Path(__file__).resolve().parent.parent
-if str(_AGORA_ROOT) not in sys.path:
-    sys.path.insert(0, str(_AGORA_ROOT))
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-from agora.kanban_compat import kanban_db as kb  # noqa: E402
-from agora import chat, motion  # noqa: E402
+from hermes_plugins.agora.agora.kanban_compat import kanban_db as kb  # noqa: E402
+from hermes_plugins.agora.agora import chat, motion  # noqa: E402
 
 
 @pytest.fixture()

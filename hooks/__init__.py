@@ -63,7 +63,7 @@ def _on_task_completed(
     """
     # --- Phase 1: Existing behavior — write motion result to task + memory ---
     try:
-        from agora.storage import motions_kanban as db
+        from ..agora.storage import motions_kanban as db
     except ImportError:
         db = None
 
@@ -92,7 +92,7 @@ def _on_task_completed(
 
     # --- Phase 2: Self-drive — trigger planner if project is active ---
     try:
-        from project_planner import on_task_completed as _planner_hook
+        from ..project_planner import on_task_completed as _planner_hook
         _planner_hook(task_id, board=board, assignee=assignee,
                       run_id=run_id, summary=summary)
     except Exception as exc:
@@ -116,7 +116,7 @@ def _maybe_nudge_skill_creation(task_id: str, profile_name: str) -> None:
     task view and in the dashboard, but doesn't pollute memory.
     """
     try:
-        from agora.kanban_compat import kanban_db
+        from ..agora.kanban_compat import kanban_db
         conn = kanban_db.connect()
         try:
             task = kanban_db.get_task(conn, task_id)
@@ -194,7 +194,7 @@ def _write_kanban_comment(
 ) -> None:
     """Append the Agora discussion result as a comment on the kanban task."""
     try:
-        from agora.kanban_compat import kanban_db
+        from ..agora.kanban_compat import kanban_db
     except ImportError:
         return
 
@@ -246,7 +246,7 @@ def _on_task_claimed(
         # Look up the task to check tenant and source motion
         tenant = None
         try:
-            from agora.kanban_compat import kanban_db
+            from ..agora.kanban_compat import kanban_db
             conn = kanban_db.connect()
             try:
                 task = kanban_db.get_task(conn, task_id)
@@ -261,7 +261,7 @@ def _on_task_claimed(
         is_agora = False
         if tenant:
             try:
-                from project_planner import get_project
+                from ..project_planner import get_project
                 proj = get_project(tenant)
                 if proj is not None and proj.get("status") == "active":
                     is_agora = True
@@ -278,7 +278,7 @@ def _on_task_claimed(
 
         # If the task has a source motion, inject the motion decision as a comment
         try:
-            from agora.storage import motions_kanban as db
+            from ..agora.storage import motions_kanban as db
             motion = _find_motion_for_task(task_id, db)
             if motion is not None and motion.get("status") == "closed":
                 decision = motion.get("decision", "")
@@ -289,7 +289,7 @@ def _on_task_claimed(
                         f"Rationale: {rationale}\n"
                     )
                     try:
-                        from agora.kanban_compat import kanban_db
+                        from ..agora.kanban_compat import kanban_db
                         conn = kanban_db.connect()
                         try:
                             kanban_db.add_comment(conn, task_id, "agora", comment)
@@ -333,7 +333,7 @@ def _on_task_blocked(
         # Check if the task belongs to an Agora project
         tenant = None
         try:
-            from agora.kanban_compat import kanban_db
+            from ..agora.kanban_compat import kanban_db
             conn = kanban_db.connect()
             try:
                 task = kanban_db.get_task(conn, task_id)
@@ -347,7 +347,7 @@ def _on_task_blocked(
         is_agora = False
         if tenant:
             try:
-                from project_planner import get_project, update_project_agents_md
+                from ..project_planner import get_project, update_project_agents_md
                 proj = get_project(tenant)
                 if proj is not None and proj.get("status") == "active":
                     is_agora = True
@@ -370,9 +370,9 @@ def _on_task_blocked(
                 # 2.0: blocked→motion via the kanban-backed converter. The
                 # motion hangs off the project's chat root and depends on the
                 # blocked task for context handoff.
-                from agora import execution as _ex
-                from agora.kanban_compat import kanban_db as _kdb
-                from project_planner import get_project
+                from ..agora import execution as _ex
+                from ..agora.kanban_compat import kanban_db as _kdb
+                from ..project_planner import get_project
                 project_name = tenant or ""
                 proj = get_project(project_name) if project_name else None
                 chat_root_id = (proj or {}).get("chat_root_id", "")

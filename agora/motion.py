@@ -22,11 +22,13 @@ import json
 import logging
 from typing import Any, Iterable, Optional
 
-from agora.kanban_compat import kanban_db as kb
+from .kanban_compat import kanban_db as kb
 
 logger = logging.getLogger(__name__)
 
 MOTION_META_PREFIX = "[agora:motion-meta] "
+#: Title prefix marking a kanban task as an Agora motion.
+MOTION_TITLE_PREFIX = "[Motion] "
 
 # Speech stance values (kept for parity with 1.x message model).
 _STANCES = {"support", "oppose", "neutral", "investigation"}
@@ -54,7 +56,7 @@ def create_motion(
 
     motion_id = kb.create_task(
         conn,
-        title=f"[Motion] {title}",
+        title=f"{MOTION_TITLE_PREFIX}{title}",
         body=description or title,
         assignee=chair or None,
         parents=[chat_root_id],
@@ -106,7 +108,7 @@ def get_motion(conn, motion_id: str) -> Optional[dict[str, Any]]:
     meta = get_motion_meta(conn, motion_id)
     return {
         "id": motion_id,
-        "title": (task.title or "").removeprefix("[Motion] "),
+        "title": (task.title or "").removeprefix(MOTION_TITLE_PREFIX),
         "description": task.body or "",
         "status": task.status,
         "decision": _decision_from_result(task.result),
@@ -176,7 +178,7 @@ def add_speech(
         msg_type = step_type
     else:
         msg_type = "opinion"
-    from agora import chat as _chat
+    from . import chat as _chat
     body = _chat.MSG_PREFIX + json.dumps({
         "type": msg_type,
         "role": role,
@@ -201,7 +203,7 @@ def add_vote(
     confidence: float = 0.8,
 ) -> int:
     """Record one vote as a ``[agora:msg]`` vote comment."""
-    from agora import chat as _chat
+    from . import chat as _chat
     body = _chat.MSG_PREFIX + json.dumps({
         "type": "vote",
         "role": role,
@@ -219,7 +221,7 @@ def get_speeches(conn, motion_id: str) -> list[dict[str, Any]]:
     Chair guidance/vote_call/dispatch/investigation messages are excluded —
     these are meta-messages, not participant speech.
     """
-    from agora import chat as _chat
+    from . import chat as _chat
     out: list[dict[str, Any]] = []
     for c in kb.list_comments(conn, motion_id):
         p = _chat.parse_message(c.body)
@@ -237,7 +239,7 @@ def get_all_messages(conn, motion_id: str) -> list[dict[str, Any]]:
     Returns each parsed ``[agora:msg]`` payload enriched with comment_id and
     created_at, in comment order. Used by the driver's history builder.
     """
-    from agora import chat as _chat
+    from . import chat as _chat
     out: list[dict[str, Any]] = []
     for c in kb.list_comments(conn, motion_id):
         p = _chat.parse_message(c.body)
@@ -251,7 +253,7 @@ def get_all_messages(conn, motion_id: str) -> list[dict[str, Any]]:
 
 def get_votes(conn, motion_id: str) -> list[dict[str, Any]]:
     """Parse votes from a motion's comments."""
-    from agora import chat as _chat
+    from . import chat as _chat
     out: list[dict[str, Any]] = []
     for c in kb.list_comments(conn, motion_id):
         p = _chat.parse_message(c.body)
@@ -293,6 +295,23 @@ def close_motion(
         "rationale": rationale,
         "action_items": action_items or [],
     }, ensure_ascii=False)
+
+    # Scope the raw flip to a motion this module owns. A bare UPDATE by id
+    # would let any caller close an arbitrary kanban task, bypassing
+    # complete_task's own guards.
+    _task = kb.get_task(conn, motion_id)
+    if _task is None:
+        raise ValueError(f"Motion '{motion_id}' not found")
+    # Either marker identifies a motion: the title prefix every motion is
+    # created with, or the motion-metadata comment this module writes. Accepting
+    # both means a task whose title was edited outside Agora still closes.
+    _title = getattr(_task, "title", "") or ""
+    if not _title.startswith(MOTION_TITLE_PREFIX) and not get_motion_meta(conn, motion_id):
+        raise ValueError(
+            f"Task '{motion_id}' is not an Agora motion "
+            f"(no {MOTION_TITLE_PREFIX!r} title prefix and no motion metadata; "
+            f"title is {_title[:80]!r})"
+        )
 
     # Direct done-flip: the motion's parent is the chat root (pinned
     # 'scheduled', never done), so complete_task's parent-satisfied gate would

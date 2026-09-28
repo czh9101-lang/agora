@@ -14,16 +14,13 @@ from pathlib import Path
 
 import pytest
 
-_AGORA_ROOT = Path(__file__).resolve().parent.parent
-if str(_AGORA_ROOT) not in sys.path:
-    sys.path.insert(0, str(_AGORA_ROOT))
 
 # The kanban_compat bridge emits FutureWarnings on the old import path; tests
 # exercise the new submodule paths directly, so silence those.
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-from agora.kanban_compat import kanban_db as kb  # noqa: E402
-from agora import chat  # noqa: E402
+from hermes_plugins.agora.agora.kanban_compat import kanban_db as kb  # noqa: E402
+from hermes_plugins.agora.agora import chat  # noqa: E402
 
 
 @pytest.fixture()

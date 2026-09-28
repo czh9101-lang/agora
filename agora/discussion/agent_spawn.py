@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from agora.utils import find_hermes_binary
+from ..utils import find_hermes_binary, get_global_root
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ def spawn_agent_speak(
     workdir: str | None = None,
     timeout: int = 3600,
     extra_env: dict[str, str] | None = None,
+    allow_unattended: bool = False,
 ) -> dict:
     """Spawn a Hermes profile agent to respond to a discussion prompt.
 
@@ -49,6 +50,9 @@ def spawn_agent_speak(
         workdir:       Working directory for the agent (project dir)
         timeout:       Max seconds to wait (default 3600 = 1 hour)
         extra_env:     Additional environment variables
+        allow_unattended: Pass ``--yolo --accept-hooks`` to the subprocess.
+                       Defaults to False; set from the project's
+                       ``allow_unattended`` setting.
 
     Returns:
         dict with keys:
@@ -75,6 +79,7 @@ def spawn_agent_speak(
     result = _run_agent_subprocess(
         hermes_bin, profile_name, prompt, session_id,
         workdir, timeout, env,
+        allow_unattended=allow_unattended,
     )
 
     # Auto-recovery: if --resume failed because the session doesn't exist,
@@ -88,6 +93,7 @@ def spawn_agent_speak(
         result = _run_agent_subprocess(
             hermes_bin, profile_name, prompt, None,
             workdir, timeout, env,
+            allow_unattended=allow_unattended,
         )
 
     return result
@@ -101,15 +107,24 @@ def _run_agent_subprocess(
     workdir: str | None,
     timeout: int,
     env: dict[str, str],
+    allow_unattended: bool = False,
 ) -> dict:
-    """Run a single agent subprocess invocation."""
+    """Run a single agent subprocess invocation.
+
+    ``allow_unattended`` decides whether the subprocess gets
+    ``--yolo --accept-hooks``. It defaults to False because a ``-q`` invocation
+    has nobody present to answer an approval prompt: without the flag the
+    agent's flagged actions fail closed, which is the safe default for a plugin
+    that was just installed. Projects opt in via ``allow_unattended`` on
+    ``agora_start_project``.
+    """
     cmd = [
         hermes_bin,
         "-p", profile_name,
-        "--yolo",
-        "--accept-hooks",
-        "--toolsets", "hermes-cli",
     ]
+    if allow_unattended:
+        cmd.extend(["--yolo", "--accept-hooks"])
+    cmd.extend(["--toolsets", "hermes-cli"])
     if session_id:
         cmd.extend(["--resume", session_id])
     cmd.extend(["chat", "-Q", "-q", prompt])
@@ -192,6 +207,7 @@ def spawn_chair_speak(
     *,
     workdir: str | None = None,
     timeout: int = 3600,
+    allow_unattended: bool = False,
 ) -> dict:
     """Spawn the chair (Leader) agent for meta-decisions.
 
@@ -205,6 +221,7 @@ def spawn_chair_speak(
         session_id=None,  # chair calls are stateless meta-decisions
         workdir=workdir,
         timeout=timeout,
+        allow_unattended=allow_unattended,
     )
 
 
@@ -216,7 +233,7 @@ def _set_project_board_env(env: dict[str, str], workdir: str | None) -> None:
     """
     try:
         import json
-        from agora.utils import get_registry_dir
+        from ..utils import get_registry_dir
         projects_dir = get_registry_dir("projects")
         for pf in projects_dir.glob("*.json"):
             try:
@@ -291,7 +308,7 @@ def spawn_discussion_driver(
         # profile-scoped HERMES_HOME (which is ~/.hermes/profiles/<name>/
         # when -p is used).  The motion DB lives in the global agora dir,
         # so runner scripts and logs must go there too for consistency.
-        global_agora = Path.home() / ".hermes" / "agora"
+        global_agora = get_global_root() / "agora"
         global_agora.mkdir(parents=True, exist_ok=True)
 
         runner_path = global_agora / f"run_discussion_{motion_id}.py"
@@ -302,32 +319,30 @@ def spawn_discussion_driver(
         runner_script = f'''\
 #!/usr/bin/env python3
 """Auto-generated discussion runner for motion {motion_id}."""
-import sys, importlib.util
+import sys, types
 from pathlib import Path
 
+# Load the plugin the way Hermes does — as a package named
+# ``hermes_plugins.agora`` with its own search path — so the modules inside it
+# can resolve their relative imports. Importing the plugin root as a bare
+# top-level package would strand every ``from ... import`` that crosses a
+# package boundary, and putting the root on sys.path would shadow core's own
+# tools/ and hooks/ packages.
 _plugin_root = Path({str(plugin_root)!r})
-_agora_pkg = _plugin_root / "agora"
+_ns = sys.modules.get("hermes_plugins")
+if _ns is None:
+    _ns = types.ModuleType("hermes_plugins")
+    _ns.__path__ = []
+    sys.modules["hermes_plugins"] = _ns
 
-# Register the agora package without polluting sys.path
-if "agora" not in sys.modules and _agora_pkg.is_dir():
-    _spec = importlib.util.spec_from_file_location(
-        "agora", _agora_pkg / "__init__.py",
-        submodule_search_locations=[str(_agora_pkg)],
-    )
-    _mod = importlib.util.module_from_spec(_spec)
-    sys.modules["agora"] = _mod
-    _spec.loader.exec_module(_mod)
+_pkg_name = "hermes_plugins.agora"
+if _pkg_name not in sys.modules:
+    _pkg = types.ModuleType(_pkg_name)
+    _pkg.__path__ = [str(_plugin_root)]
+    _pkg.__package__ = _pkg_name
+    sys.modules[_pkg_name] = _pkg
 
-# Register project_planner (top-level module)
-if "project_planner" not in sys.modules:
-    _pp = _plugin_root / "project_planner.py"
-    if _pp.exists():
-        _spec = importlib.util.spec_from_file_location("project_planner", _pp)
-        _mod = importlib.util.module_from_spec(_spec)
-        sys.modules["project_planner"] = _mod
-        _spec.loader.exec_module(_mod)
-
-from agora.discussion.driver import DiscussionDriver
+from hermes_plugins.agora.agora.discussion.driver import DiscussionDriver
 driver = DiscussionDriver(
     motion_id={motion_id!r},
     chair_profile={chair!r},
@@ -344,7 +359,9 @@ print(f"Discussion result: {{result.decision}} ({{result.steps_completed}} steps
         # Spawn it in the background
         with open(log_path, "a") as log_fd:
             _proc = subprocess.Popen(
-                ["python3", str(runner_path)],
+                # Same interpreter as this process — a bare "python3" from PATH
+                # is Hermes' bundled tool Python, which cannot import hermes_cli.
+                [sys.executable, str(runner_path)],
                 stdout=log_fd,
                 stderr=log_fd,
                 start_new_session=True,

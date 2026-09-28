@@ -2,6 +2,106 @@
 
 All notable changes to the Agora plugin are documented here.
 
+## [2.0.4] — 2026-09-28
+
+### Catalog admission: review follow-up
+
+Changes made in response to the plugin-catalog review, grouped by what the
+reviewer flagged. Every item reached outside the plugin's own sandbox.
+
+**Approvals are now opt-in**
+
+- Workers and the leader no longer run with `--yolo --accept-hooks` by default.
+  A `-q` subprocess has nobody to answer an approval prompt, so without the flag
+  their flagged actions fail closed: the team can read, discuss and plan, but
+  cannot write files or run commands.
+- New `allow_unattended` flag on `agora_start_project` (default `False`, also
+  exposed in the Dashboard) adds the bypass for one project. Stored in the
+  project registry; opting in is explicit and never inherited by a restart.
+- Chair/participant names from `agora_raise_motion` are now validated against
+  the worker registry before they reach `hermes -p <name>`.
+
+**Credentials**
+
+- The worker profile's `.env` is **copied** instead of symlinked, matching core's
+  profile provisioning (`hermes_cli/profiles.py::_clone_file`), and tightened to
+  mode `0600` because `copy2` preserves the source's permission bits. A symlink
+  let anything running in the worker profile read *and rewrite* the user's real
+  keys through the link. Existing symlinks are migrated to copies.
+
+**Registration no longer writes to disk**
+
+- `register()` no longer deploys the bundled skills; that moved to an explicit
+  `hermes agora setup` command (and still runs on `agora_start_project`).
+- Skill deployment and worker seeding resolve paths through
+  `hermes_constants.get_hermes_home()` instead of a hardcoded `Path.home()`, so a
+  custom `HERMES_HOME` is respected instead of being written around.
+
+**Kanban scope**
+
+- Dropped `OR tenant IS NULL` from the task queries in `project_planner.py`.
+  Those matches selected *every* un-tenanted task in the database, and `stop_project`
+  / project-restart deleted them. Every task Agora creates sets a `tenant`, so
+  the strict board scope is both correct and safe.
+- `close_motion`'s raw `UPDATE tasks SET status='done'` now verifies the target is
+  an Agora motion (title prefix `[Motion] `) before writing.
+- `agora_close_task` refuses tasks that are not on an Agora project board.
+
+**Imports and paths**
+
+- Every module now reaches its siblings through relative imports inside the
+  `hermes_plugins.agora` package. The plugin root is no longer inserted into
+  `sys.path` — it contains `tools/`, `hooks/` and `skills/`, which core also has,
+  so putting it there shadowed those packages.
+- This also fixed a latent bug: `project_planner.py` had a module-level absolute
+  import that only resolved when the dashboard happened to load first.
+- Removed hardcoded install paths (`/usr/local/lib/hermes-agent`, `/root`,
+  `/home/ubuntu`) from the binary lookup, the dashboard defaults, the heartbeat
+  script and the discussion runner. Paths derive from `HERMES_HOME` /
+  `sys.executable` at runtime.
+- The generated heartbeat script and discussion runner load the plugin as
+  `hermes_plugins.agora` (mirroring Hermes' own loader) so the relative imports
+  resolve in those standalone processes.
+- The discussion runner is spawned with `sys.executable` instead of a bare
+  `python3`: the latter resolved to Hermes' bundled tool Python, which cannot
+  import `hermes_cli`.
+
+**Docs**
+
+- `README.md` is now the English README and `README.CN.md` the Chinese one, so
+  the catalog's English-first expectation is met. Content is otherwise unchanged.
+- Documented the approvals model, the `hermes agora setup` step, and the
+  `allow_unattended` opt-in in both READMEs and the `agora-setup` skill.
+- Removed stale documentation: memory-tool dependency rows (memory writes were
+  removed in 1.9.0), `.env` symlink references, and the 1.x `motions.db` schema
+  is now marked legacy.
+
+**Tests:** 56 passing (13 new, covering the boundaries above).
+
+### Review pass on the above
+
+A self-review of this release's diff caught three defects, all fixed here:
+
+- **The generated heartbeat script did not parse.** `AGORA_PLUGIN_PATH="$PLUGIN" { … }`
+  is not valid shell — the brace group was treated as a command named `{`, the
+  `} 2>&1 | tail -10` was a syntax error, and the cron job's output was not
+  tailed. Found by actually running the script rather than eyeballing it; now
+  `export …` on its own line + a brace group, and covered by a test that runs
+  `bash -n` on the generated script.
+- **The motion ownership guard was too narrow.** Matching only the `[Motion] `
+  title prefix meant a motion renamed outside Agora would be refused — and the
+  driver finalizes through `close_motion`, so that path could break. The guard
+  now accepts the title prefix **or** the motion-metadata comment.
+- **The guard's `ValueError` escaped uncaught.** `_wrap_handler` does not catch
+  exceptions, so `agora_close_motion` would surface a raw traceback instead of
+  its usual `{"error": …}` shape. The handler now converts it.
+
+Cleanups from the same pass: removed an unused `BUNDLED_SKILLS` constant and a
+duplicated Hermes-home helper, dropped two `except Exception: pass` guards in
+`find_hermes_binary` (neither call can raise), fixed a comment that still
+described the removed `OR tenant IS NULL` query, and the heartbeat script now
+prefers the interpreter that generated it over a bare `python3`.
+
 ## [2.0.3] — 2026-09-27
 
 ### Catalog admission: security-scan clean

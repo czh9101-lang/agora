@@ -21,40 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
-import sys as _sys
-import types as _types
-import importlib.util as _importlib_util
 from pathlib import Path as _Path
 from typing import Any
 
-
-# Make the `agora` subpackage and top-level plugin modules importable in
-# worker processes without adding the plugin root to sys.path (which would
-# shadow Hermes' own `cli` module).
-_PLUGIN_ROOT = _Path(__file__).resolve().parent.parent
-_AGORA_PKG = _PLUGIN_ROOT / "agora"
-if "agora" not in _sys.modules and _AGORA_PKG.is_dir():
-    _spec = _importlib_util.spec_from_file_location(
-        "agora",
-        _AGORA_PKG / "__init__.py",
-        submodule_search_locations=[str(_AGORA_PKG)],
-    )
-    if _spec and _spec.loader:
-        _mod = _importlib_util.module_from_spec(_spec)
-        _sys.modules["agora"] = _mod
-        _spec.loader.exec_module(_mod)
-
-# Register top-level plugin modules (project_planner, cli, etc.) so that
-# `from project_planner import ...` works in worker processes.
-for _mod_name in ("project_planner",):
-    if _mod_name not in _sys.modules:
-        _mod_file = _PLUGIN_ROOT / f"{_mod_name}.py"
-        if _mod_file.exists():
-            _spec = _importlib_util.spec_from_file_location(_mod_name, _mod_file)
-            if _spec and _spec.loader:
-                _mod = _importlib_util.module_from_spec(_spec)
-                _sys.modules[_mod_name] = _mod
-                _spec.loader.exec_module(_mod)
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +207,7 @@ def _wrap_handler_async(handler):
 
 def register_all_tools(ctx: Any) -> None:
     """Register all Agora tools and the /agora slash command."""
-    from agora.storage import motions_kanban as db
+    from ..agora.storage import motions_kanban as db
 
     # --- Tool: agora_raise_motion ---
     async def _raise_motion_handler(args: dict, **kwargs) -> dict:
@@ -395,19 +364,24 @@ def register_all_tools(ctx: Any) -> None:
                     "code": 400,
                 }
 
-        db.update_motion_status(
-            motion_id,
-            status="closed",
-            decision=decision,
-            rationale=rationale,
-        )
+        try:
+            db.update_motion_status(
+                motion_id,
+                status="closed",
+                decision=decision,
+                rationale=rationale,
+            )
+        except ValueError as exc:
+            # Raised by the storage layer's own ownership guard — report it the
+            # way every other rejection from this tool is reported.
+            return {"error": str(exc), "code": 400}
         db.update_motion_state(motion_id, "closed")
         db.save_discussion_state(motion_id, current_state="closed")
 
         # Refresh AGENTS.md so the closed motion is removed from active list
         if motion.get("project"):
             try:
-                from project_planner import update_project_agents_md
+                from ..project_planner import update_project_agents_md
                 update_project_agents_md(motion["project"])
             except Exception:
                 logger.warning("Failed to refresh AGENTS.md for %s", motion.get("project"))
@@ -476,7 +450,7 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     The calling agent can continue working — it will see the discussion
     result in its MEMORY.md when the discussion completes.
     """
-    from agora.storage import motions_kanban as db
+    from ..agora.storage import motions_kanban as db
     title = args.get("title", "")
     if not title or not title.strip():
         return {
@@ -497,7 +471,7 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     # Apply discussion template if specified
     if template_name:
         try:
-            from agora.discussion.roles import DISCUSSION_TEMPLATES
+            from ..agora.discussion.roles import DISCUSSION_TEMPLATES
             template = DISCUSSION_TEMPLATES.get(template_name)
             if template:
                 if not participants:
@@ -516,9 +490,9 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     # motion rescue, and task routing even when participants/chair are set.
     resolved_project = ""
     try:
-        from project_planner import get_heartbeat_member, get_project
-        from agora.team_manager import get_team_for_project, get_team
-        from agora.kanban_compat import kanban_db
+        from ..project_planner import get_heartbeat_member, get_project
+        from ..agora.team_manager import get_team_for_project, get_team
+        from ..agora.kanban_compat import kanban_db
 
         # 1. Resolve project name from source task
         conn = kanban_db.connect()
@@ -533,7 +507,7 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
         # 2. If no project from task, try the active project
         if not resolved_project:
             try:
-                from project_planner import list_projects
+                from ..project_planner import list_projects
                 for p in list_projects():
                     if p.get("status") == "active":
                         resolved_project = p["name"]
@@ -557,6 +531,26 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
                             max_steps = team["default_max_steps"]
     except Exception:
         pass
+
+    # Validate every name before it reaches `hermes -p <name>`: an unchecked
+    # string would let a discussion select (or create) a profile the operator
+    # never registered, and the speaker subprocess runs as that profile.
+    try:
+        from ..agora.worker_manager import get_worker, list_workers
+
+        candidates = ([chair] if chair else []) + list(participants or [])
+        unknown = sorted({n for n in candidates if n and not get_worker(n)})
+        if unknown:
+            known = [w.get("name") for w in list_workers() if w.get("name")]
+            return {
+                "error": "Unknown worker(s): " + ", ".join(unknown),
+                "hint": "Only registered workers can participate in a discussion. "
+                        "Create them with agora_create_worker, or omit chair/participants "
+                        "to use the project team.",
+                "available_workers": known,
+            }
+    except Exception as exc:
+        logger.warning("Worker registry validation skipped: %s", exc)
 
     # Create the motion (2.0: motion is a Kanban sub-task of the project's
     # chat root — so it requires an active project).
@@ -582,7 +576,7 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     # Refresh AGENTS.md so the new motion shows up in the active discussions list
     if resolved_project:
         try:
-            from project_planner import update_project_agents_md
+            from ..project_planner import update_project_agents_md
             update_project_agents_md(resolved_project)
         except Exception:
             pass
@@ -592,7 +586,7 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     # If blocking, block the current kanban task
     if blocking and source_task_id:
         try:
-            from agora.kanban_compat import kanban_db
+            from ..agora.kanban_compat import kanban_db
             conn = kanban_db.connect()
             try:
                 kanban_db.block_task(
@@ -612,15 +606,15 @@ async def _handle_raise_motion(ctx: Any, args: dict) -> dict:
     spawn_status = None
     if chair and participants:
         try:
-            from agora.discussion.agent_spawn import spawn_discussion_driver
+            from ..agora.discussion.agent_spawn import spawn_discussion_driver
 
             # Resolve workdir from the project registry if possible
             spawn_workdir = ""
             spawn_project = ""
             try:
-                from agora.utils import get_registry_dir, safe_name
+                from ..agora.utils import get_registry_dir, safe_name
                 if source_task_id:
-                    from agora.kanban_compat import kanban_db
+                    from ..agora.kanban_compat import kanban_db
                     conn = kanban_db.connect()
                     try:
                         task = kanban_db.get_task(conn, source_task_id)
@@ -712,7 +706,7 @@ def _handle_create_task(ctx: Any, args: dict) -> dict:
     else:
         # Try to detect the active project from the registry
         try:
-            from project_planner import list_projects
+            from ..project_planner import list_projects
             for p in list_projects():
                 if p.get("status") == "active":
                     tenant = p.get("board") or p["name"]
@@ -725,11 +719,11 @@ def _handle_create_task(ctx: Any, args: dict) -> dict:
     # Map assignee to a real worker profile if it's a role name
     if assignee and project:
         try:
-            from agora.team_manager import get_team_for_project, get_team, get_assignee_for_role
+            from ..agora.team_manager import get_team_for_project, get_team, get_assignee_for_role
             team = get_team_for_project(project)
             if not team:
                 try:
-                    from project_planner import get_project
+                    from ..project_planner import get_project
                     proj = get_project(project)
                     if proj and proj.get("team"):
                         team = get_team(proj["team"])
@@ -743,7 +737,7 @@ def _handle_create_task(ctx: Any, args: dict) -> dict:
             pass
 
     try:
-        from agora.kanban_compat import kanban_db
+        from ..agora.kanban_compat import kanban_db
         conn = kanban_db.connect()
         try:
             task_id = kanban_db.create_task(
@@ -784,7 +778,7 @@ def _handle_agora_command(ctx: Any, raw_args: str) -> str | None:
         /agora show <motion_id>      — show discussion messages
         /agora result <motion_id>    — show discussion result
     """
-    from agora.storage import motions_kanban as db
+    from ..agora.storage import motions_kanban as db
     parts = raw_args.strip().split(None, 1)
     if not parts:
         return (
@@ -936,7 +930,7 @@ def _register_chat_tools(ctx: Any) -> None:
     Workers post ``[agora:msg]`` comments and pull their unseen messages via
     notify cursors — no separate DB, no broadcast fan-out.
     """
-    from agora import chat as _chat
+    from ..agora import chat as _chat
 
     # --- Tool: agora_message ---
     _MESSAGE_SCHEMA = {
@@ -962,8 +956,8 @@ def _register_chat_tools(ctx: Any) -> None:
         if not project:
             return {"error": "project is required"}
         try:
-            from project_planner import get_project
-            from agora.kanban_compat import kanban_db as _kdb
+            from ..project_planner import get_project
+            from ..agora.kanban_compat import kanban_db as _kdb
             proj = get_project(project)
             if proj is None:
                 return {"error": f"Project '{project}' not found"}
@@ -1010,8 +1004,8 @@ def _register_chat_tools(ctx: Any) -> None:
         if not project:
             return {"error": "project is required"}
         try:
-            from project_planner import get_project
-            from agora.kanban_compat import kanban_db as _kdb
+            from ..project_planner import get_project
+            from ..agora.kanban_compat import kanban_db as _kdb
             proj = get_project(project)
             if proj is None:
                 return {"error": f"Project '{project}' not found"}
@@ -1044,7 +1038,7 @@ def _register_project_tools(ctx: Any) -> None:
     """Register self-drive project management tools."""
 
     async def _start_project_handler(args: dict, **kwargs) -> dict:
-        from project_planner import start_project
+        from ..project_planner import start_project
         name = args.get("name", "")
         workdir = args.get("workdir", "")
         goal = args.get("goal", "")
@@ -1076,7 +1070,7 @@ def _register_project_tools(ctx: Any) -> None:
     )
 
     async def _stop_project_handler(args: dict, **kwargs) -> dict:
-        from project_planner import stop_project
+        from ..project_planner import stop_project
         name = args.get("name", "")
         if not name:
             return {"error": "name is required"}
@@ -1093,7 +1087,7 @@ def _register_project_tools(ctx: Any) -> None:
     )
 
     def _project_status_handler(args: dict, **kwargs) -> dict:
-        from project_planner import get_project, list_projects
+        from ..project_planner import get_project, list_projects
         name = args.get("name", "")
         if name:
             data = get_project(name)
@@ -1125,7 +1119,7 @@ def _register_project_tools(ctx: Any) -> None:
     }
 
     async def _update_project_handler(args: dict, **kwargs) -> dict:
-        from project_planner import update_project
+        from ..project_planner import update_project
         name = args.get("name", "")
         if not name:
             return {"error": "name is required"}
@@ -1202,7 +1196,7 @@ def _register_worker_tools(ctx: Any) -> None:
     """Register worker and team management tools."""
 
     async def _create_worker_handler(args: dict, **kwargs) -> dict:
-        from agora.worker_manager import create_worker
+        from ..agora.worker_manager import create_worker
         return create_worker(
             name=args.get("name", ""),
             role=args.get("role", ""),
@@ -1218,7 +1212,7 @@ def _register_worker_tools(ctx: Any) -> None:
     )
 
     def _list_workers_handler(args: dict, **kwargs) -> dict:
-        from agora.worker_manager import list_workers
+        from ..agora.worker_manager import list_workers
         return {"workers": list_workers()}
 
     ctx.register_tool(
@@ -1229,7 +1223,7 @@ def _register_worker_tools(ctx: Any) -> None:
     )
 
     async def _remove_worker_handler(args: dict, **kwargs) -> dict:
-        from agora.worker_manager import remove_worker
+        from ..agora.worker_manager import remove_worker
         return remove_worker(args.get("name", ""), delete_profile=args.get("delete_profile", True))
 
     ctx.register_tool(
@@ -1240,7 +1234,7 @@ def _register_worker_tools(ctx: Any) -> None:
     )
 
     def _list_templates_handler(args: dict, **kwargs) -> dict:
-        from agora.worker_templates import list_templates
+        from ..agora.worker_templates import list_templates
         return {"templates": list_templates()}
 
     ctx.register_tool(
@@ -1251,7 +1245,7 @@ def _register_worker_tools(ctx: Any) -> None:
     )
 
     async def _create_team_handler(args: dict, **kwargs) -> dict:
-        from agora.team_manager import create_team
+        from ..agora.team_manager import create_team
         return create_team(
             team_name=args.get("team_name", ""),
             worker_names=args.get("workers", []),
@@ -1266,7 +1260,7 @@ def _register_worker_tools(ctx: Any) -> None:
     )
 
     def _list_teams_handler(args: dict, **kwargs) -> dict:
-        from agora.team_manager import list_teams
+        from ..agora.team_manager import list_teams
         return {"teams": list_teams()}
 
     ctx.register_tool(
@@ -1277,7 +1271,7 @@ def _register_worker_tools(ctx: Any) -> None:
     )
 
     async def _remove_team_handler(args: dict, **kwargs) -> dict:
-        from agora.team_manager import remove_team
+        from ..agora.team_manager import remove_team
         return remove_team(args.get("team_name", ""))
 
     ctx.register_tool(
@@ -1318,12 +1312,24 @@ def _register_worker_tools(ctx: Any) -> None:
             return {"error": "task_id is required"}
 
         try:
-            from agora.kanban_compat import kanban_db as _kdb
+            from ..agora.kanban_compat import kanban_db as _kdb
+            from ..project_planner import is_agora_owned_task
             conn = _kdb.connect()
             try:
                 task = _kdb.get_task(conn, task_id)
                 if task is None:
                     return {"error": f"Task '{task_id}' not found"}
+
+                # Only tasks on an Agora project board may be closed here: an
+                # unchecked id would let a caller complete or archive an
+                # arbitrary kanban task outside the plugin's own board.
+                if not is_agora_owned_task(task):
+                    return {
+                        "error": f"Task '{task_id}' is not on an Agora project board "
+                                 f"(tenant={(getattr(task, 'tenant', '') or '(none)')!r})",
+                        "hint": "agora_close_task only closes tasks belonging to this "
+                                "plugin's projects. Use the native kanban tools for others.",
+                    }
 
                 if action == "complete":
                     _kdb.complete_task(conn, task_id, summary=summary or "Closed by leader via agora_close_task")

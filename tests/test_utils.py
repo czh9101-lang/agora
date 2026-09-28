@@ -4,7 +4,7 @@ from __future__ import annotations
 import yaml
 from pathlib import Path
 
-from agora.utils import (
+from hermes_plugins.agora.agora.utils import (
     safe_name,
     now_iso,
     parse_json_response,

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .utils import find_hermes_binary, now_iso, get_registry_dir, safe_name
+from ..project_planner import project_allows_unattended
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def heartbeat(leader_name: str | None = None, project: str | None = None) -> dic
 
     Returns dict with spawn status.
     """
-    from project_planner import list_projects, get_project, update_heartbeat_status, on_project_complete
+    from ..project_planner import list_projects, get_project, update_heartbeat_status, on_project_complete
 
     # Wake a specific project
     if project:
@@ -161,8 +162,8 @@ def _rescue_stuck_motions(project: dict) -> None:
     - If no chair/participants can be resolved → close as error
     """
     try:
-        from agora.storage import motions_kanban as db
-        from agora.discussion.agent_spawn import spawn_discussion_driver
+        from .storage import motions_kanban as db
+        from .discussion.agent_spawn import spawn_discussion_driver
 
         project_name = project.get("name", "")
         if not project_name:
@@ -260,15 +261,15 @@ def _rescue_stuck_motions(project: dict) -> None:
 
             if not chair:
                 try:
-                    from project_planner import get_heartbeat_member
+                    from ..project_planner import get_heartbeat_member
                     chair = get_heartbeat_member(project_name) or ""
                 except Exception:
                     pass
 
             if not participants:
                 try:
-                    from project_planner import get_project
-                    from agora.team_manager import get_team_for_project, get_team
+                    from ..project_planner import get_project
+                    from .team_manager import get_team_for_project, get_team
                     proj = get_project(project_name)
                     if proj and proj.get("team"):
                         team = get_team(proj["team"])
@@ -325,8 +326,8 @@ def _spawn_leader_agent(project: dict) -> dict:
     accumulated session history causes the leader to lose focus, repeat
     already-completed motions, or ignore SOUL.md constraints.
     """
-    from project_planner import update_heartbeat_status
-    from agora.worker_manager import get_worker, get_worker_session, update_worker_session
+    from ..project_planner import update_heartbeat_status
+    from .worker_manager import get_worker, get_worker_session, update_worker_session
 
     project_name = project["name"]
     member_name = project.get("heartbeat_member", "")
@@ -346,7 +347,7 @@ def _spawn_leader_agent(project: dict) -> dict:
 
     # Refresh AGENTS.md so the leader sees current project state
     try:
-        from project_planner import update_project_agents_md
+        from ..project_planner import update_project_agents_md
         update_project_agents_md(project_name)
     except Exception as exc:
         logger.warning("Failed to refresh AGENTS.md for project '%s': %s", project_name, exc)
@@ -374,8 +375,7 @@ def _spawn_leader_agent(project: dict) -> dict:
     if not hermes_bin:
         return {"error": "Cannot find hermes binary"}
 
-    # Build command — must include --yolo and --accept-hooks for unattended
-    # operation. -Q gives quiet mode.
+    # Build command. -Q gives quiet mode.
     # Toolsets: read-only file tools (read_file, search_files, patch) +
     # web, skills, memory. No terminal, no code_execution, no browser.
     # The leader must NOT run commands, write code, or modify project files.
@@ -387,12 +387,17 @@ def _spawn_leader_agent(project: dict) -> dict:
     cmd = [
         hermes_bin,
         "-p", member_name,
-        "--yolo",
+    ]
+    # Approvals: a `-q` subprocess has nobody present to answer an approval
+    # prompt, so flagged actions fail closed. The leader only bypasses them for
+    # a project that explicitly opted in via `allow_unattended`.
+    if project_allows_unattended(project_name):
+        cmd.extend(["--yolo", "--accept-hooks"])
+    cmd.extend([
         "--toolsets", "file,web,skills,todo,session_search,agora",
-        "--accept-hooks",
         "--cli",
         "chat", "-Q", "-q", prompt,
-    ]
+    ])
 
     # Resume project-specific session if available
     # — DISABLED: fresh session every heartbeat for attention quality
@@ -462,7 +467,7 @@ def check_project_complete(project_name: str) -> bool:
     consecutive one triggers on_project_complete.
     """
     try:
-        from project_planner import get_project, on_project_complete
+        from ..project_planner import get_project, on_project_complete
 
         proj = get_project(project_name)
         if proj is None or proj.get("status") != "active":
@@ -502,7 +507,7 @@ def check_project_complete(project_name: str) -> bool:
         _ready: list = []
         _blocked: list = []
         try:
-            from agora.kanban_compat import kanban_db as _kdb
+            from .kanban_compat import kanban_db as _kdb
             _conn = _kdb.connect()
             try:
                 # Query by board tenant OR NULL tenant — tasks created via
@@ -569,7 +574,7 @@ def check_project_complete(project_name: str) -> bool:
 def _update_complete_count(project_name: str, count: int) -> None:
     """Update the consecutive PROJECT_COMPLETE counter for a project."""
     try:
-        from project_planner import get_project
+        from ..project_planner import get_project
         pf = get_registry_dir("projects") / f"{safe_name(project_name)}.json"
         if not pf.exists():
             return

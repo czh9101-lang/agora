@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from agora.kanban_compat import kanban_db as kb
+from .kanban_compat import kanban_db as kb
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def blocked_to_motion(
     result, comments) is auto-injected into the discussion. Participants
     default to [blocked task's assignee, "architect", "leader"].
     """
-    from agora import motion
+    from . import motion
 
     task = kb.get_task(conn, task_id)
     if task is None:

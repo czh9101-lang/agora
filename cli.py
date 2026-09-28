@@ -1,6 +1,7 @@
 """Agora CLI — `hermes agora` subcommand.
 
 Usage:
+    hermes agora setup              — deploy the bundled skills
     hermes agora list               — list discussions
     hermes agora show <motion_id>   — show discussion messages
     hermes agora result <motion_id> — show discussion result
@@ -18,6 +19,12 @@ from typing import Any
 def setup_agora_cli(subparser: argparse.ArgumentParser) -> None:
     """Set up the `hermes agora` subcommand arguments."""
     sub = subparser.add_subparsers(dest="agora_command")
+
+    # setup
+    sub.add_parser(
+        "setup",
+        help="Deploy the bundled skills into <hermes_home>/skills/collaboration/",
+    )
 
     # list
     sp_list = sub.add_parser("list", help="List discussions")
@@ -46,15 +53,25 @@ def handle_agora_cli(args: argparse.Namespace) -> int:
     """Handle `hermes agora` CLI commands. Returns exit code."""
     cmd = getattr(args, "agora_command", None)
     if not cmd:
-        print("Usage: hermes agora {list|show|result|discuss|stats}")
+        print("Usage: hermes agora {setup|list|show|result|discuss|stats}")
         return 1
 
-    try:
-        from .agora.storage import motions_kanban as db
-    except ImportError:
-        import sys, pathlib
-        sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-        from agora.storage import motions_kanban as db
+    # `setup` deploys bundled skills and needs no board access.
+    if cmd == "setup":
+        from . import deploy_bundled_skills
+        from .agora.utils import hermes_home_path
+
+        deployed = deploy_bundled_skills()
+        if not deployed:
+            print("No bundled skills found to deploy.")
+            return 0
+        dest = hermes_home_path() / "skills" / "collaboration"
+        print(f"Deployed {len(deployed)} skill(s) to {dest}:")
+        for name in deployed:
+            print(f"  • {name}")
+        return 0
+
+    from .agora.storage import motions_kanban as db
 
     if cmd == "list":
         motions = db.list_motions(status_filter=args.status, limit=args.limit)

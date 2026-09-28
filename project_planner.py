@@ -20,10 +20,17 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
-from agora.utils import get_registry_dir, safe_name, find_hermes_binary, now_iso
+from .agora.utils import (
+    get_registry_dir,
+    get_global_root,
+    safe_name,
+    find_hermes_binary,
+    now_iso,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +63,8 @@ def _ensure_chat_channel(project_name: str, board_name: str, team: str | None, h
     (see agora.chat). Persists ``chat_root_id`` into the project JSON.
     """
     try:
-        from agora.chat import ensure_chat_root, subscribe_worker
-        from agora.kanban_compat import kanban_db as _kdb
+        from .agora.chat import ensure_chat_root, subscribe_worker
+        from .agora.kanban_compat import kanban_db as _kdb
         conn = _kdb.connect()
         try:
             root_id = ensure_chat_root(
@@ -66,7 +73,7 @@ def _ensure_chat_channel(project_name: str, board_name: str, team: str | None, h
             # Subscribe all team workers + the heartbeat member.
             workers: list[str] = []
             if team:
-                from agora.team_manager import get_team
+                from .agora.team_manager import get_team
                 tm = get_team(team)
                 if tm:
                     workers = [w["name"] for w in tm.get("workers", [])]
@@ -134,7 +141,7 @@ def update_project_agents_md(project_name: str) -> dict:
     members = []
     if team_name:
         try:
-            from agora.team_manager import get_team
+            from .agora.team_manager import get_team
             team = get_team(team_name)
             if team:
                 for w in team.get("workers", []):
@@ -191,7 +198,7 @@ def update_project_agents_md(project_name: str) -> dict:
 
     # Active discussions — gives everyone context on ongoing debates
     try:
-        from agora.storage import motions_kanban as db
+        from .agora.storage import motions_kanban as db
         active_motions = db.list_motions(status_filter="active", limit=10, project=project_name)
         if active_motions:
             lines.append("## Active Discussions")
@@ -207,24 +214,22 @@ def update_project_agents_md(project_name: str) -> dict:
     except Exception:
         pass
 
-    # Kanban task summary — tells leader what's pending/done.
-    # Query both the project board tenant AND tasks with no tenant
-    # (NULL) — leader may have created tasks via kanban CLI which
-    # doesn't set tenant. Without the NULL query, those tasks are
-    # invisible in AGENTS.md and the leader thinks kanban is empty.
+    # Kanban task summary — tells the leader what's pending/done.
+    # Scoped to this project's board (tenant). Agora sets the tenant on every
+    # task it creates, so anything without one belongs to another producer.
     try:
-        from agora.kanban_compat import kanban_db as _kdb
+        from .agora.kanban_compat import kanban_db as _kdb
         board = proj.get("board") or f"agora-{safe_name(project_name)}"
         _conn = _kdb.connect()
         try:
-            # Query by board tenant OR NULL tenant — both belong to this project.
-            # list_tasks(tenant=board) only matches non-NULL tenants, so tasks
-            # created via kanban CLI (which leaves tenant NULL) would be missed.
+            # Scope strictly to this project's board: Agora always sets
+            # `tenant` when it creates a task, so a NULL tenant means the task
+            # belongs to someone else. Matching NULL here would pull in every
+            # un-tenanted task in the database.
             def _list_project_tasks(conn, status):
-                """List tasks for this project's board OR with NULL tenant."""
+                """List this project's board tasks in the given status."""
                 rows = conn.execute(
-                    "SELECT * FROM tasks WHERE status = ? "
-                    "AND (tenant = ? OR tenant IS NULL)",
+                    "SELECT * FROM tasks WHERE status = ? AND tenant = ?",
                     (status, board),
                 ).fetchall()
                 return [_kdb.Task.from_row(r) for r in rows]
@@ -279,7 +284,7 @@ def update_project_agents_md(project_name: str) -> dict:
     # Only show motions that actually had a discussion (step_count > 0) —
     # 0-step "adopted" motions were bypassed and should not appear as ✅.
     try:
-        from agora.storage import motions_kanban as db
+        from .agora.storage import motions_kanban as db
         recent = db.list_motions(status_filter="closed", limit=10, project=project_name)
         adopted = [
             m for m in recent
@@ -373,7 +378,7 @@ def _create_heartbeat_cron(project_name: str, minutes: int) -> str | None:
         # which would cause the cron job to be invisible from the dashboard
         # and the gateway's main cron scheduler.
         cron_env = {**os.environ}
-        cron_env["HERMES_HOME"] = str(Path.home() / ".hermes")
+        cron_env["HERMES_HOME"] = str(get_global_root())
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=15,
@@ -392,18 +397,19 @@ def _create_heartbeat_cron(project_name: str, minutes: int) -> str | None:
 
 
 def _ensure_heartbeat_script() -> None:
-    """Ensure the leader_heartbeat.sh script exists in ~/.hermes/scripts/."""
+    """Write leader_heartbeat.sh into ``<hermes_home>/scripts/``.
+
+    Rewritten whenever the content differs, so upgrades reach installs that
+    already have an older script. Every path is resolved at runtime from
+    ``HERMES_HOME`` / the script's own location — no install layout is
+    hardcoded.
+    """
     try:
         kanban_db = os.environ.get("HERMES_KANBAN_DB", "")
-        if kanban_db:
-            scripts_dir = Path(kanban_db).parent / "scripts"
-        else:
-            scripts_dir = Path.home() / ".hermes" / "scripts"
+        scripts_dir = (Path(kanban_db).parent if kanban_db else get_global_root()) / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
 
         script_path = scripts_dir / "leader_heartbeat.sh"
-        if script_path.exists():
-            return
 
         script_content = """#!/bin/bash
 # Leader heartbeat — called by Hermes cron scheduler.
@@ -412,49 +418,76 @@ def _ensure_heartbeat_script() -> None:
 # To pause: hermes cron pause heartbeat-<project_name>
 # To resume: hermes cron resume heartbeat-<project_name>
 
-export HERMES_KANBAN_DB="${HERMES_KANBAN_DB:-/root/.hermes/kanban.db}"
+# Resolve Hermes home the way core does — never hardcode an install layout.
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+export HERMES_HOME
+export HERMES_KANBAN_DB="${HERMES_KANBAN_DB:-$HERMES_HOME/kanban.db}"
 
-PYTHON=""
-for p in /usr/local/lib/hermes-agent/venv/bin/python3 /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 /usr/bin/python3; do
-    [ -x "$p" ] && PYTHON="$p" && break
-done
+# Prefer the interpreter that runs Hermes: a bare python3 from PATH is often
+# Hermes' bundled tool Python, which cannot import hermes_cli.
+PYTHON="${AGORA_PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+    # First choice is the interpreter that generated this script (it is the one
+    # Hermes runs under, so hermes_cli is importable); the rest are fallbacks.
+    for p in "__AGORA_GEN_PYTHON__" "$HERMES_HOME/hermes-agent/venv/bin/python3" "$(command -v python3)"; do
+        [ -x "$p" ] && PYTHON="$p" && break
+    done
+fi
 [ -z "$PYTHON" ] && PYTHON=python3
 
-# Search for the agora plugin directory — must contain agora/ submodule
-PLUGIN=""
-for d in "$HOME/.hermes/plugins/agora" "$(dirname "$(readlink -f "$0")")/.." /root/.hermes/plugins/agora; do
-    [ -d "$d/agora" ] && PLUGIN="$d" && break
-done
+# Locate the agora plugin directory — it must contain the agora/ submodule.
+PLUGIN="${AGORA_PLUGIN_PATH:-}"
+if [ -z "$PLUGIN" ]; then
+    for d in "$HERMES_HOME/plugins/agora" "$(cd "$(dirname "$0")/.." && pwd)/plugins/agora"; do
+        [ -d "$d/agora" ] && PLUGIN="$d" && break
+    done
+fi
 
-$PYTHON -c "
-import sys, json, os, importlib.util
+if [ -z "$PLUGIN" ]; then
+    echo "agora plugin directory not found; set AGORA_PLUGIN_PATH" >&2
+    exit 1
+fi
+
+export AGORA_PLUGIN_PATH="$PLUGIN"
+{
+  "$PYTHON" - <<'PY'
+import json, os, sys, types
 from pathlib import Path
 
-_plugin_root = Path(os.environ.get('AGORA_PLUGIN_PATH', '$PLUGIN'))
-_agora_pkg = _plugin_root / 'agora'
+# Load the plugin the way Hermes does — as `hermes_plugins.agora` with its own
+# search path — so the modules inside it resolve their relative imports. Bare
+# top-level registration would strand every relative import that crosses a
+# package boundary, and putting the plugin root on sys.path would shadow core's
+# own tools/ and hooks/ packages.
+_plugin_root = Path(os.environ["AGORA_PLUGIN_PATH"])
+_ns = sys.modules.get("hermes_plugins")
+if _ns is None:
+    _ns = types.ModuleType("hermes_plugins")
+    _ns.__path__ = []
+    sys.modules["hermes_plugins"] = _ns
 
-if 'agora' not in sys.modules and _agora_pkg.is_dir():
-    _spec = importlib.util.spec_from_file_location('agora', _agora_pkg / '__init__.py', submodule_search_locations=[str(_agora_pkg)])
-    _mod = importlib.util.module_from_spec(_spec)
-    sys.modules['agora'] = _mod
-    _spec.loader.exec_module(_mod)
+_pkg_name = "hermes_plugins.agora"
+if _pkg_name not in sys.modules:
+    _pkg = types.ModuleType(_pkg_name)
+    _pkg.__path__ = [str(_plugin_root)]
+    _pkg.__package__ = _pkg_name
+    sys.modules[_pkg_name] = _pkg
 
-if 'project_planner' not in sys.modules:
-    _pp = _plugin_root / 'project_planner.py'
-    if _pp.exists():
-        _spec = importlib.util.spec_from_file_location('project_planner', _pp)
-        _mod = importlib.util.module_from_spec(_spec)
-        sys.modules['project_planner'] = _mod
-        _spec.loader.exec_module(_mod)
-
-from agora.leader_loop import heartbeat
-result = heartbeat()
-print(json.dumps(result, indent=2))
-" 2>&1 | tail -10
+from hermes_plugins.agora.agora.leader_loop import heartbeat
+print(json.dumps(heartbeat(), indent=2))
+PY
+} 2>&1 | tail -10
 """
+        script_content = script_content.replace("__AGORA_GEN_PYTHON__", sys.executable)
+        if script_path.exists():
+            try:
+                if script_path.read_text() == script_content:
+                    return
+            except OSError:
+                pass
         script_path.write_text(script_content)
         script_path.chmod(0o755)
-        logger.info("Heartbeat script created at %s", script_path)
+        logger.info("Heartbeat script written to %s", script_path)
     except Exception as exc:
         logger.warning("Failed to create heartbeat script: %s", exc)
 
@@ -464,7 +497,7 @@ def _remove_heartbeat_cron(cron_id: str) -> None:
     hermes = find_hermes_binary()
     try:
         cron_env = {**os.environ}
-        cron_env["HERMES_HOME"] = str(Path.home() / ".hermes")
+        cron_env["HERMES_HOME"] = str(get_global_root())
         subprocess.run(
             [hermes, "cron", "remove", cron_id],
             capture_output=True, text=True, timeout=10,
@@ -490,6 +523,7 @@ def start_project(
     team: str | None = None,
     heartbeat_member: str | None = None,
     heartbeat_minutes: int = 15,
+    allow_unattended: bool = False,
 ) -> dict:
     """Register a project for self-driving development.
 
@@ -506,15 +540,38 @@ def start_project(
         team:              Team name for assignee routing
         heartbeat_member:  Worker name to wake on heartbeat (usually a leader)
         heartbeat_minutes: Heartbeat interval in minutes
+        allow_unattended:  Let workers and the leader run with approvals
+                           bypassed (``--yolo --accept-hooks``). Default False:
+                           a ``-q`` subprocess has nobody to answer an approval
+                           prompt, so without this the team can read, discuss
+                           and plan, but its file writes and shell commands are
+                           denied. Enable only for a workdir you are willing to
+                           let agents modify unattended.
 
     Returns:
         dict with status and project info
     """
+    # Deploy the bundled skills (explicit user action — registration never
+    # writes to disk). Idempotent; workers also fall back to the bundled copy.
+    try:
+        from .agora import deploy_bundled_skills
+        deploy_bundled_skills()
+    except Exception as exc:
+        logger.warning("Skill deployment failed: %s", exc)
+
     # Ensure workdir exists
     import os
     if workdir and not os.path.exists(workdir):
         os.makedirs(workdir, exist_ok=True)
         logger.info("Created project workdir: %s", workdir)
+
+    if allow_unattended:
+        logger.warning(
+            "Project '%s' started with allow_unattended=True — workers run with "
+            "approvals bypassed. Their file writes and shell commands execute "
+            "without prompting.",
+            project_name,
+        )
 
     pf = _project_file(project_name)
     board_name = _ensure_project_board(project_name)
@@ -522,7 +579,7 @@ def start_project(
     # Validate heartbeat_member if provided — runs for both new and
     # reactivated projects (M6 fix: previously only validated for new projects).
     if heartbeat_member:
-        from agora.worker_manager import get_worker
+        from .agora.worker_manager import get_worker
         worker = get_worker(heartbeat_member)
         if worker is None:
             return {"error": f"Heartbeat member '{heartbeat_member}' not found in worker registry"}
@@ -557,6 +614,10 @@ def start_project(
                 existing["stop_condition"] = stop_condition
             if team:
                 existing["team"] = team
+            # Opting in is explicit; a reactivate without the flag keeps whatever
+            # the project already had (so a restart doesn't silently grant it).
+            if allow_unattended:
+                existing["allow_unattended"] = True
             # Recreate heartbeat cron if member is set and cron is missing or stale
             if existing.get("heartbeat_member"):
                 old_cron_id = existing.get("heartbeat_cron_id")
@@ -566,7 +627,7 @@ def start_project(
                     _hermes = find_hermes_binary()
                     try:
                         _cron_env = {**os.environ}
-                        _cron_env["HERMES_HOME"] = str(Path.home() / ".hermes")
+                        _cron_env["HERMES_HOME"] = str(get_global_root())
                         _r = _sp.run(
                             [_hermes, "cron", "list", "--json"],
                             capture_output=True, text=True, timeout=15,
@@ -617,6 +678,9 @@ def start_project(
         "complete_count": 0,
         "completion_check_pos": 0,
         "chat_root_id": None,  # 2.0 team channel task id (set below)
+        # Whether workers/the leader may run with approvals bypassed. Off unless
+        # the operator opts in when starting the project.
+        "allow_unattended": bool(allow_unattended),
     }
 
     # Create cron job for heartbeat if member is specified
@@ -636,7 +700,7 @@ def start_project(
     # to the project's worker list (not just the heartbeat member).
     if team:
         try:
-            from agora.team_manager import _bind_team_to_project, get_team
+            from .agora.team_manager import _bind_team_to_project, get_team
             _bind_team_to_project(team, project_name)
             # Add project to every team member's projects list
             tm = get_team(team)
@@ -678,12 +742,13 @@ def stop_project(project_name: str) -> dict:
     # Delete all kanban tasks — same as on_project_complete.
     # Without this, old tasks remain and confuse the leader on restart.
     try:
-        from agora.kanban_compat import kanban_db as _kdb
+        from .agora.kanban_compat import kanban_db as _kdb
         board = f"agora-{safe_name(project_name)}"
         conn = _kdb.connect()
         try:
+            # Strict tenant scope — never delete tasks that merely lack a tenant.
             rows = conn.execute(
-                "SELECT id FROM tasks WHERE (tenant = ? OR tenant IS NULL)",
+                "SELECT id FROM tasks WHERE tenant = ?",
                 (board,),
             ).fetchall()
             task_ids = [r[0] for r in rows]
@@ -812,7 +877,7 @@ def delete_project(project_name: str) -> dict:
     team = data.get("team")
     if team:
         try:
-            from agora.team_manager import get_team
+            from .agora.team_manager import get_team
             tm = get_team(team)
             if tm:
                 for w in tm.get("workers", []):
@@ -831,7 +896,7 @@ def delete_project(project_name: str) -> dict:
 
 def _remove_project_from_worker(worker_name: str, project_name: str) -> None:
     """Remove a project from a worker's projects list."""
-    from agora.worker_manager import _worker_file
+    from .agora.worker_manager import _worker_file
     wf = _worker_file(worker_name)
     if not wf.exists():
         return
@@ -850,6 +915,51 @@ def get_project(project_name: str) -> dict | None:
     if not pf.exists():
         return None
     return json.loads(pf.read_text())
+
+
+def project_allows_unattended(project_name: str | None) -> bool:
+    """True when the project opted into approval-bypassing agents.
+
+    Missing/unknown projects answer False, so a project that never set the flag
+    (or an unresolvable one) keeps the safe default.
+    """
+    if not project_name:
+        return False
+    try:
+        proj = get_project(project_name)
+    except Exception:
+        return False
+    return bool((proj or {}).get("allow_unattended", False))
+
+
+#: Prefix every Agora project board carries.
+BOARD_PREFIX = "agora-"
+
+
+def agora_board_for(project_name: str) -> str:
+    """Board (kanban tenant) name for a project."""
+    return f"{BOARD_PREFIX}{safe_name(project_name)}"
+
+
+def is_agora_owned_task(task: Any) -> bool:
+    """True when a kanban task belongs to an Agora project board.
+
+    Used to keep task-scoped operations (close/complete/archive) inside the
+    plugin's own board: without this an arbitrary task id would reach mechanism
+    meant only for Agora's tasks. Resolution is strict when the project registry
+    answers (the board must belong to a registered project) and falls back to
+    the board prefix when it can't be read.
+    """
+    tenant = getattr(task, "tenant", "") or ""
+    if not tenant.startswith(BOARD_PREFIX):
+        return False
+    try:
+        boards = {agora_board_for(p.get("name", "")) for p in list_projects()}
+    except Exception:
+        return True
+    if not boards:
+        return True
+    return tenant in boards
 
 
 def list_projects() -> list[dict]:
@@ -934,7 +1044,7 @@ def resume_heartbeat(project_name: str) -> dict:
 
 def trigger_heartbeat(project_name: str) -> dict:
     """Manually trigger a project's heartbeat right now."""
-    from agora.leader_loop import heartbeat
+    from .agora.leader_loop import heartbeat
     return heartbeat(project=project_name)
 
 
@@ -978,14 +1088,13 @@ def on_project_complete(project_name: str) -> None:
         # and doesn't realize the project was restarted — it tries
         # PROJECT_COMPLETE immediately because "all tasks are done".
         try:
-            from agora.kanban_compat import kanban_db as _kdb
+            from .agora.kanban_compat import kanban_db as _kdb
             board = f"agora-{safe_name(project_name)}"
             conn = _kdb.connect()
             try:
                 # Get all task IDs for this project
                 rows = conn.execute(
-                    "SELECT id FROM tasks "
-                    "WHERE (tenant = ? OR tenant IS NULL)",
+                    "SELECT id FROM tasks WHERE tenant = ?",
                     (board,),
                 ).fetchall()
                 task_ids = [r[0] for r in rows]
@@ -1019,7 +1128,7 @@ def get_cron_status(project_name: str) -> dict:
     cron_name = f"heartbeat-{safe_name(project_name)}"
     # Check both the default profile and named profiles
     cron_paths = [
-        Path.home() / ".hermes" / "cron" / "jobs.json",
+        get_global_root() / "cron" / "jobs.json",
     ]
     for cron_jobs_path in cron_paths:
         try:
@@ -1079,7 +1188,7 @@ def on_task_completed(task_id: str, **kwargs: Any) -> None:
 
 def _add_project_to_worker(worker_name: str, project_name: str) -> None:
     """Add a project to a worker's project list."""
-    from agora.worker_manager import _worker_file
+    from .agora.worker_manager import _worker_file
     wf = _worker_file(worker_name)
     if not wf.exists():
         return
@@ -1094,7 +1203,7 @@ def _add_project_to_worker(worker_name: str, project_name: str) -> None:
 def _find_project_for_task(task_id: str) -> str | None:
     """Find the project name for a completed task."""
     try:
-        from agora.kanban_compat import kanban_db
+        from .agora.kanban_compat import kanban_db
         conn = kanban_db.connect()
         try:
             task = kanban_db.get_task(conn, task_id)
@@ -1128,7 +1237,7 @@ def _has_pending_tasks(project_name: str | None = None) -> bool:
                       (tenant = "agora-<project_name>"). If None, counts all.
     """
     try:
-        from agora.kanban_compat import kanban_db
+        from .agora.kanban_compat import kanban_db
         conn = kanban_db.connect()
         try:
             if project_name:

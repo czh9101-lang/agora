@@ -31,6 +31,7 @@ from typing import Any
 from .utils import (
     get_registry_dir,
     get_profiles_root,
+    get_hermes_root,
     find_hermes_binary,
     now_iso,
     patch_config_model,
@@ -176,12 +177,13 @@ def create_worker(
     # ~/.hermes/plugins/ (e.g. agora itself) and their tools are unavailable.
     _link_global_plugins(profile_dir, profiles_root.parent)
 
-    # Step 1f: Link global .env into the profile directory.
+    # Step 1f: Copy the global .env into the profile directory.
     # Workers spawned with -p <profile> have HERMES_HOME pointing at their
     # profile directory, so Hermes reads <profile>/.env for secrets. Without
     # this, workers can't find API keys and fail with "No inference provider
-    # configured". Uses symlink so key rotation in the global .env is immediate.
-    _link_global_env(profile_dir, profiles_root.parent)
+    # configured". Copied (not symlinked) to match core's profile provisioning:
+    # a symlink would let a worker edit the user's real keys through the link.
+    _copy_global_env(profile_dir, profiles_root.parent)
 
     # Step 2: Write SOUL.md
     if template is not None:
@@ -408,23 +410,22 @@ def _seed_agora_skill(skills_dir: Path) -> None:
     This gives every new worker an understanding of how Agora works:
     the team structure, kanban commands, discussion protocol, and
     available tools.
+
+    Prefers the plugin's own bundled copy so seeding works even when
+    ``hermes agora setup`` was never run; falls back to the deployed copy under
+    the Hermes home.
     """
     import shutil
 
-    # The global skill lives in ~/.hermes/skills/collaboration/agora-awareness/
-    global_skills = Path.home() / ".hermes" / "skills"
-    source = global_skills / "collaboration" / "agora-awareness" / "SKILL.md"
-
-    if not source.exists():
-        # Try alternate locations
-        for alt in [
-            Path.home() / ".hermes" / "skills" / "agora-awareness" / "SKILL.md",
-        ]:
-            if alt.exists():
-                source = alt
-                break
-
-    if not source.exists():
+    candidates = [
+        # Bundled with the plugin (authoritative).
+        Path(__file__).resolve().parent.parent / "skills" / "agora-awareness" / "SKILL.md",
+        # Deployed by `hermes agora setup`.
+        get_hermes_root() / "skills" / "collaboration" / "agora-awareness" / "SKILL.md",
+        get_hermes_root() / "skills" / "agora-awareness" / "SKILL.md",
+    ]
+    source = next((c for c in candidates if c.exists()), None)
+    if source is None:
         logger.warning("agora-awareness skill not found — skipping seed")
         return
 
@@ -532,17 +533,22 @@ def _link_global_plugins(profile_dir: Path, hermes_root: Path) -> None:
         logger.warning("Failed to link global plugins into %s: %s", profile_dir, exc)
 
 
-def _link_global_env(profile_dir: Path, hermes_root: Path) -> None:
-    """Symlink the global .env into the profile directory.
+def _copy_global_env(profile_dir: Path, hermes_root: Path) -> None:
+    """Copy the global .env into the profile directory.
 
     Workers spawned with -p <profile> have HERMES_HOME pointing at their
     profile directory, so Hermes reads ``<profile>/.env`` for API keys
     and secrets. Without this, workers can't find credentials and fail
     with "No inference provider configured".
 
-    Uses symlink so key rotation in the global ~/.hermes/.env is reflected
-    immediately. Existing .env files (real files or symlinks) are left
-    untouched to respect manual overrides.
+    Copied rather than symlinked, matching core's profile provisioning
+    (``hermes_cli/profiles.py::_clone_file``): a symlink would let anything
+    running inside the worker profile read *and rewrite* the user's real keys
+    through the link. The copy is tightened to owner-only because ``copy2``
+    preserves the source's mode bits, so a loose source (umask 0o644) would
+    leak. Existing real .env files are left untouched to respect manual
+    overrides; an existing *symlink* is materialized into a copy so installs
+    created by older versions are migrated off the link.
     """
     try:
         global_env = hermes_root / ".env"
@@ -550,10 +556,20 @@ def _link_global_env(profile_dir: Path, hermes_root: Path) -> None:
             return
 
         profile_env = profile_dir / ".env"
-        if profile_env.exists() or profile_env.is_symlink():
+        if profile_env.is_symlink():
+            try:
+                profile_env.unlink()
+            except OSError as exc:
+                logger.warning("Failed to drop .env symlink %s: %s", profile_env, exc)
+                return
+        elif profile_env.exists():
             return
 
-        profile_env.symlink_to(global_env.resolve())
-        logger.info("Linked .env %s → %s", profile_env, global_env)
+        shutil.copy2(global_env, profile_env)
+        try:
+            os.chmod(str(profile_env), 0o600)
+        except OSError as exc:
+            logger.warning("Failed to tighten .env mode for %s: %s", profile_env, exc)
+        logger.info("Copied .env → %s (mode 0600)", profile_env)
     except Exception as exc:
-        logger.warning("Failed to symlink .env into %s: %s", profile_dir, exc)
+        logger.warning("Failed to copy .env into %s: %s", profile_dir, exc)

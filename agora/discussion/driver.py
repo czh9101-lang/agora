@@ -23,9 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agora.storage import motions_kanban as db
-from agora.utils import get_global_root, parse_json_response
+from ..storage import motions_kanban as db
+from ..utils import get_global_root, parse_json_response
 from .agent_spawn import spawn_agent_speak, spawn_chair_speak
+from ...project_planner import project_allows_unattended as _project_allows_unattended
 from .chair import (
     CHAIR_EVALUATE_PROMPT,
     CHAIR_OPENING_PROMPT,
@@ -82,6 +83,9 @@ class DiscussionDriver:
         self.min_steps = max(3, len(participants))
         self.speak_timeout = speak_timeout
         self.chair_timeout = chair_timeout
+        # Whether speak subprocesses may bypass approvals. Read from the
+        # project so the opt-in lives in one place (agora_start_project).
+        self.allow_unattended = _project_allows_unattended(project_name)
 
     def run(self) -> DiscussionResult:
         """Run the full event-driven discussion.
@@ -325,6 +329,7 @@ class DiscussionDriver:
             self.chair_profile, prompt,
             workdir=self.workdir,
             timeout=self.chair_timeout,
+            allow_unattended=self.allow_unattended,
         )
         if result.get("error"):
             logger.error("Chair open failed: %s", result["error"])
@@ -343,6 +348,7 @@ class DiscussionDriver:
                 self.chair_profile, retry_prompt,
                 workdir=self.workdir,
                 timeout=self.chair_timeout,
+                allow_unattended=self.allow_unattended,
             )
             if result.get("error"):
                 logger.error("Chair open retry failed: %s", result["error"])
@@ -383,6 +389,7 @@ class DiscussionDriver:
             self.chair_profile, prompt,
             workdir=self.workdir,
             timeout=self.chair_timeout,
+            allow_unattended=self.allow_unattended,
         )
         if result.get("error"):
             logger.error("Chair evaluate failed: %s", result["error"])
@@ -401,6 +408,7 @@ class DiscussionDriver:
                 self.chair_profile, retry_prompt,
                 workdir=self.workdir,
                 timeout=self.chair_timeout,
+                allow_unattended=self.allow_unattended,
             )
             if result.get("error"):
                 logger.error("Chair evaluate retry failed: %s", result["error"])
@@ -444,6 +452,7 @@ class DiscussionDriver:
                 session_id=session_id,
                 workdir=self.workdir,
                 timeout=self.speak_timeout,
+                allow_unattended=self.allow_unattended,
             )
 
             # Save the new session_id for future --resume
@@ -524,6 +533,7 @@ class DiscussionDriver:
             workdir=self.workdir,
             # Investigations may take longer (web search, running tests)
             timeout=self.speak_timeout + 240,
+            allow_unattended=self.allow_unattended,
         )
 
         if result.get("session_id"):
@@ -545,6 +555,7 @@ class DiscussionDriver:
                 session_id=session_id,
                 workdir=self.workdir,
                 timeout=self.speak_timeout,
+                allow_unattended=self.allow_unattended,
             )
             if result.get("session_id"):
                 self._update_worker_session(profile, result["session_id"])
@@ -586,6 +597,7 @@ class DiscussionDriver:
             self.chair_profile, vote_call,
             workdir=self.workdir,
             timeout=self.chair_timeout,
+            allow_unattended=self.allow_unattended,
         )
         if call_result.get("reply"):
             db.add_message(
@@ -667,6 +679,7 @@ class DiscussionDriver:
             self.chair_profile, forced_prompt,
             workdir=self.workdir,
             timeout=self.chair_timeout,
+            allow_unattended=self.allow_unattended,
         )
         if call_result.get("reply"):
             db.add_message(
@@ -747,6 +760,7 @@ class DiscussionDriver:
             self.chair_profile, prompt,
             workdir=self.workdir,
             timeout=self.chair_timeout,
+            allow_unattended=self.allow_unattended,
         )
 
         summary_data: dict[str, Any] = {}
@@ -852,7 +866,7 @@ class DiscussionDriver:
         if not source_task_id:
             return ""
         try:
-            from agora.kanban_compat import kanban_db
+            from ..kanban_compat import kanban_db
             conn = kanban_db.connect()
             try:
                 task = kanban_db.get_task(conn, source_task_id)
@@ -871,13 +885,13 @@ class DiscussionDriver:
         Falls back to the legacy global session_id for backward compat.
         """
         try:
-            from agora.worker_manager import get_worker_session
+            from ..worker_manager import get_worker_session
             session_id = get_worker_session(worker_name, self.project_name or None)
 
             # Check session size — rotate if too large
             if session_id:
                 try:
-                    from agora.session_manager import check_session_size, rotate_session
+                    from ..session_manager import check_session_size, rotate_session
                     size_info = check_session_size(worker_name, session_id)
                     if size_info.get("needs_rotation"):
                         logger.info(
@@ -898,7 +912,7 @@ class DiscussionDriver:
     def _update_worker_session(self, worker_name: str, session_id: str) -> None:
         """Update a worker's per-project session_id in the registry."""
         try:
-            from agora.worker_manager import update_worker_session
+            from ..worker_manager import update_worker_session
             update_worker_session(worker_name, session_id, self.project_name or None)
         except Exception as exc:
             logger.debug("Failed to update session for %s: %s", worker_name, exc)
@@ -906,7 +920,7 @@ class DiscussionDriver:
     def _clear_worker_session(self, worker_name: str) -> None:
         """Clear a worker's session_id so the next spawn creates a fresh one."""
         try:
-            from agora.worker_manager import update_worker_session
+            from ..worker_manager import update_worker_session
             update_worker_session(worker_name, None, self.project_name or None)
             logger.info("Cleared session for %s (will create fresh on next spawn)", worker_name)
         except Exception as exc:
@@ -925,7 +939,7 @@ class DiscussionDriver:
         if not self.project_name:
             return None
         try:
-            from project_planner import get_project
+            from ...project_planner import get_project
             proj = get_project(self.project_name)
             if proj and proj.get("board"):
                 return proj["board"]
@@ -944,16 +958,16 @@ class DiscussionDriver:
         execution converter's assignee_map; here we resolve role names through
         the project's team, falling back to the raw owner name.
         """
-        from agora import execution as _ex
-        from agora.kanban_compat import kanban_db as _kdb
+        from .. import execution as _ex
+        from ..kanban_compat import kanban_db as _kdb
 
         # Resolve owner (role name) → worker profile via the team, when a team
         # is bound to the project.
         assignee_map: dict[str, str] = {}
         if self.project_name:
             try:
-                from agora.team_manager import get_team_for_project, get_team, get_assignee_for_role
-                from project_planner import get_project
+                from ..team_manager import get_team_for_project, get_team, get_assignee_for_role
+                from ...project_planner import get_project
                 team = get_team_for_project(self.project_name)
                 if not team:
                     proj = get_project(self.project_name)

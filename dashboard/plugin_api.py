@@ -30,12 +30,6 @@ else:
 
 logger = logging.getLogger(__name__)
 
-import sys as _sys
-from pathlib import Path as _Path
-_PLUGIN_ROOT = _Path(__file__).parent.parent
-if str(_PLUGIN_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_PLUGIN_ROOT))
-
 # ---------------------------------------------------------------------------
 # Profile management (generic Hermes profile CRUD — not Agora-specific)
 # ---------------------------------------------------------------------------
@@ -239,7 +233,7 @@ def get_profile_skills(name: str):
     """
     try:
         import yaml as _yaml
-        from pathlib import Path as _Path
+        from pathlib import Path as Path
 
         profiles_mod = _get_profiles_module()
         profile_dir = profiles_mod.get_profile_dir(name)
@@ -249,7 +243,7 @@ def get_profile_skills(name: str):
         # Read disabled list and external_dirs from the profile's config.yaml
         config_path = profile_dir / "config.yaml"
         disabled: set[str] = set()
-        external_dirs: list[_Path] = []
+        external_dirs: list[Path] = []
         if config_path.exists():
             with open(config_path) as f:
                 cfg = _yaml.safe_load(f) or {}
@@ -257,11 +251,11 @@ def get_profile_skills(name: str):
             if isinstance(skills_cfg, dict):
                 disabled = set(skills_cfg.get("disabled", []) or [])
                 for d in (skills_cfg.get("external_dirs") or []):
-                    p = _Path(d)
+                    p = Path(d)
                     if p.is_dir():
                         external_dirs.append(p)
 
-        def _parse_skill_name(md_path: _Path) -> str:
+        def _parse_skill_name(md_path: Path) -> str:
             """Extract the frontmatter 'name' field, fall back to dir name."""
             try:
                 content = md_path.read_text(encoding="utf-8")[:2000]
@@ -322,7 +316,7 @@ def list_motions(
 ):
     """List Agora discussions."""
     try:
-        from agora.storage import motions_kanban as db
+        from ..agora.storage import motions_kanban as db
         motions = db.list_motions(status_filter=status, limit=limit)
         return {
             "motions": [
@@ -354,7 +348,7 @@ def list_motions(
 def get_motion(motion_id: str):
     """Get a motion with all its messages."""
     try:
-        from agora.storage import motions_kanban as db
+        from ..agora.storage import motions_kanban as db
         motion = db.get_motion(motion_id)
         if motion is None:
             raise HTTPException(status_code=404, detail="Motion not found")
@@ -412,7 +406,7 @@ def start_discussion(req: StartDiscussionRequest):
     """
     try:
         import sys as _sys
-        from agora.storage import motions_kanban as db
+        from ..agora.storage import motions_kanban as db
 
         # Auto-resolve participants and chair from the project
         participants = req.participants
@@ -421,8 +415,8 @@ def start_discussion(req: StartDiscussionRequest):
         if not participants or not chair or max_steps == 30:
             if req.project:
                 try:
-                    from project_planner import get_heartbeat_member, get_project
-                    from agora.team_manager import get_team
+                    from ..project_planner import get_heartbeat_member, get_project
+                    from ..agora.team_manager import get_team
                     # Chair defaults to project's heartbeat_member
                     if not chair:
                         chair = get_heartbeat_member(req.project) or ""
@@ -448,7 +442,7 @@ def start_discussion(req: StartDiscussionRequest):
         workdir = ""
         if req.project:
             try:
-                from agora.utils import get_registry_dir, safe_name
+                from ..agora.utils import get_registry_dir, safe_name
                 proj_file = get_registry_dir("projects") / f"{safe_name(req.project)}.json"
                 if proj_file.exists():
                     import json as _json
@@ -476,7 +470,7 @@ def start_discussion(req: StartDiscussionRequest):
         # Spawn the discussion driver as a background process using the
         # shared spawn function (same logic used by the agora_raise_motion tool).
         try:
-            from agora.discussion.agent_spawn import spawn_discussion_driver
+            from ..agora.discussion.agent_spawn import spawn_discussion_driver
             spawn_result = spawn_discussion_driver(
                 motion_id=motion["id"],
                 chair=chair,
@@ -518,7 +512,7 @@ def start_discussion(req: StartDiscussionRequest):
 def get_discussion_state_endpoint(motion_id: str):
     """Get the current event-driven discussion state."""
     try:
-        from agora.storage import motions_kanban as db
+        from ..agora.storage import motions_kanban as db
         motion = db.get_motion(motion_id)
         if motion is None:
             raise HTTPException(status_code=404, detail="Motion not found")
@@ -555,7 +549,7 @@ class UpdateProjectRequest(BaseModel):
 def update_project_endpoint(project_name: str, req: UpdateProjectRequest):
     """Update a project's goal, description, or stop condition."""
     try:
-        from project_planner import update_project
+        from ..project_planner import update_project
         return update_project(
             project_name,
             goal=req.goal,
@@ -578,7 +572,7 @@ class CreateWorkerRequest(BaseModel):
 def list_workers():
     """List all registered Agora workers."""
     try:
-        from agora.worker_manager import list_workers as _list
+        from ..agora.worker_manager import list_workers as _list
         return {"workers": _list()}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -588,7 +582,7 @@ def list_workers():
 def list_worker_templates():
     """List available role templates."""
     try:
-        from agora.worker_templates import list_templates
+        from ..agora.worker_templates import list_templates
         return {"templates": list_templates()}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -598,7 +592,7 @@ def list_worker_templates():
 def create_worker(req: CreateWorkerRequest):
     """Create a worker profile from a role template."""
     try:
-        from agora.worker_manager import create_worker as _create
+        from ..agora.worker_manager import create_worker as _create
         result = _create(name=req.name, role=req.role,
                          clone_from=req.clone_from, model=req.model)
         if "error" in result:
@@ -614,7 +608,7 @@ def create_worker(req: CreateWorkerRequest):
 def remove_worker(name: str, delete_profile: bool = True):
     """Remove a worker from the Agora registry."""
     try:
-        from agora.worker_manager import remove_worker as _remove
+        from ..agora.worker_manager import remove_worker as _remove
         result = _remove(name, delete_profile=delete_profile)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -639,7 +633,7 @@ class CreateTeamRequestV2(BaseModel):
 def list_teams():
     """List all registered teams."""
     try:
-        from agora.team_manager import list_teams as _list
+        from ..agora.team_manager import list_teams as _list
         return {"teams": _list()}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -649,7 +643,7 @@ def list_teams():
 def create_team(req: CreateTeamRequestV2):
     """Create a team by selecting workers."""
     try:
-        from agora.team_manager import create_team as _create
+        from ..agora.team_manager import create_team as _create
         result = _create(team_name=req.team_name, worker_names=req.workers,
                          project=req.project)
         if "error" in result:
@@ -665,7 +659,7 @@ def create_team(req: CreateTeamRequestV2):
 def remove_team(team_name: str):
     """Remove a team."""
     try:
-        from agora.team_manager import remove_team as _remove
+        from ..agora.team_manager import remove_team as _remove
         result = _remove(team_name)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -685,11 +679,16 @@ class StartProjectRequest(BaseModel):
     goal: str = Field(..., description="Project goal")
     description: str = Field("", description="Detailed project description")
     stop_condition: str = Field("", description="When should the project stop?")
-    workdir: str = Field("/root", description="Working directory")
+    workdir: str = Field(default_factory=lambda: str(Path.home()), description="Working directory")
     team: Optional[str] = Field(None, description="Team name")
     max_rounds: int = Field(10, description="Max planning rounds")
     heartbeat_member: Optional[str] = Field(None, description="Worker name to wake on heartbeat (usually a leader)")
     heartbeat_minutes: int = Field(15, description="Heartbeat interval in minutes")
+    allow_unattended: bool = Field(
+        False,
+        description="Run workers with approvals bypassed (they can write files and "
+                    "run commands unattended). Off by default.",
+    )
 
 
 class UpdateHeartbeatRequest(BaseModel):
@@ -735,7 +734,7 @@ def _count_tasks(tenant: str = "") -> dict:
 def list_projects_api():
     """List all Agora projects with cron status and task counts."""
     try:
-        from project_planner import list_projects, get_cron_status
+        from ..project_planner import list_projects, get_cron_status
         projects = list_projects()
         for proj in projects:
             proj_name = proj.get("name", "")
@@ -758,7 +757,7 @@ def list_projects_api():
 def get_project_api(name: str):
     """Get project detail with cron status and task counts."""
     try:
-        from project_planner import get_project, get_cron_status
+        from ..project_planner import get_project, get_cron_status
         proj = get_project(name)
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
@@ -785,7 +784,7 @@ def get_project_api(name: str):
 def start_project_api(req: StartProjectRequest):
     """Start a new self-driving project."""
     try:
-        from project_planner import start_project
+        from ..project_planner import start_project
         result = start_project(
             project_name=req.name,
             workdir=req.workdir,
@@ -796,6 +795,7 @@ def start_project_api(req: StartProjectRequest):
             team=req.team,
             heartbeat_member=req.heartbeat_member,
             heartbeat_minutes=req.heartbeat_minutes,
+            allow_unattended=req.allow_unattended,
         )
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -810,7 +810,7 @@ def start_project_api(req: StartProjectRequest):
 def stop_project_api(name: str):
     """Stop a project (pause heartbeat, mark as stopped)."""
     try:
-        from project_planner import stop_project
+        from ..project_planner import stop_project
         result = stop_project(name)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -825,7 +825,7 @@ def stop_project_api(name: str):
 def delete_project_api(name: str):
     """Permanently delete a project."""
     try:
-        from project_planner import delete_project
+        from ..project_planner import delete_project
         result = delete_project(name)
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
@@ -840,7 +840,7 @@ def delete_project_api(name: str):
 def update_project_heartbeat(name: str, req: UpdateHeartbeatRequest):
     """Update the heartbeat interval for a project."""
     try:
-        from project_planner import update_heartbeat
+        from ..project_planner import update_heartbeat
         result = update_heartbeat(name, req.minutes)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -855,7 +855,7 @@ def update_project_heartbeat(name: str, req: UpdateHeartbeatRequest):
 def pause_project_heartbeat(name: str):
     """Pause a project's heartbeat cron job."""
     try:
-        from project_planner import pause_heartbeat
+        from ..project_planner import pause_heartbeat
         result = pause_heartbeat(name)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -870,7 +870,7 @@ def pause_project_heartbeat(name: str):
 def resume_project_heartbeat(name: str):
     """Resume a project's heartbeat cron job."""
     try:
-        from project_planner import resume_heartbeat
+        from ..project_planner import resume_heartbeat
         result = resume_heartbeat(name)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -885,7 +885,7 @@ def resume_project_heartbeat(name: str):
 def trigger_project_heartbeat(name: str):
     """Manually trigger a project heartbeat right now."""
     try:
-        from project_planner import trigger_heartbeat
+        from ..project_planner import trigger_heartbeat
         result = trigger_heartbeat(name)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -908,7 +908,7 @@ def get_project_tasks_api(name: str):
     """
     try:
         import sqlite3
-        from project_planner import get_project
+        from ..project_planner import get_project
 
         proj = get_project(name)
         if proj is None:
@@ -918,9 +918,7 @@ def get_project_tasks_api(name: str):
 
         # Try the kanban board API first
         try:
-            import sys
-            sys.path.insert(0, "/usr/local/lib/hermes-agent")
-            from agora.kanban_compat import kanban_db
+            from ..agora.kanban_compat import kanban_db
             boards = kanban_db.list_boards()
             board_slugs = [b["slug"] for b in boards]
         except Exception:
@@ -984,7 +982,7 @@ class AddMessageRequest(BaseModel):
 def add_motion_message(motion_id: str, req: AddMessageRequest):
     """Add a human message to a discussion (human participation)."""
     try:
-        from agora.storage import motions_kanban as db
+        from ..agora.storage import motions_kanban as db
         motion = db.get_motion(motion_id)
         if motion is None:
             raise HTTPException(status_code=404, detail="Motion not found")
@@ -1021,9 +1019,9 @@ class PostChatMessageRequest(BaseModel):
 def get_project_chat(name: str, limit: int = Query(20, ge=1, le=200)):
     """List the project team channel's recent messages (Kanban-backed)."""
     try:
-        from project_planner import get_project
-        from agora.kanban_compat import kanban_db as _kdb
-        from agora import chat as _chat
+        from ..project_planner import get_project
+        from ..agora.kanban_compat import kanban_db as _kdb
+        from ..agora import chat as _chat
 
         proj = get_project(name)
         if proj is None:
@@ -1048,9 +1046,9 @@ def get_project_chat(name: str, limit: int = Query(20, ge=1, le=200)):
 def post_project_chat(name: str, req: PostChatMessageRequest):
     """Post a message to the project team channel."""
     try:
-        from project_planner import get_project
-        from agora.kanban_compat import kanban_db as _kdb
-        from agora import chat as _chat
+        from ..project_planner import get_project
+        from ..agora.kanban_compat import kanban_db as _kdb
+        from ..agora import chat as _chat
 
         proj = get_project(name)
         if proj is None:
@@ -1081,9 +1079,9 @@ def post_project_chat(name: str, req: PostChatMessageRequest):
 def get_project_motions(name: str, status: str = Query("all", pattern="^(all|active|closed)$")):
     """List the project's motions (Kanban-backed child tasks of the chat root)."""
     try:
-        from project_planner import get_project
-        from agora.kanban_compat import kanban_db as _kdb
-        from agora import motion as _motion
+        from ..project_planner import get_project
+        from ..agora.kanban_compat import kanban_db as _kdb
+        from ..agora import motion as _motion
 
         proj = get_project(name)
         if proj is None:

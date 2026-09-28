@@ -1,7 +1,7 @@
 """Tests for agora.discussion.agent_spawn._extract_reply."""
 from __future__ import annotations
 
-from agora.discussion.agent_spawn import _extract_reply
+from hermes_plugins.agora.agora.discussion.agent_spawn import _extract_reply
 
 
 def test_extract_reply_with_marker():

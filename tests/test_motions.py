@@ -1,7 +1,7 @@
 """Tests for agora.storage.motions — the SQLite motions DB."""
 from __future__ import annotations
 
-from agora.storage import motions as db
+from hermes_plugins.agora.agora.storage import motions as db
 
 
 # --------------------------------------------------------------------------- #
