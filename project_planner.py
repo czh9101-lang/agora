@@ -554,7 +554,7 @@ def start_project(
     # Deploy the bundled skills (explicit user action — registration never
     # writes to disk). Idempotent; workers also fall back to the bundled copy.
     try:
-        from .agora import deploy_bundled_skills
+        from . import deploy_bundled_skills
         deploy_bundled_skills()
     except Exception as exc:
         logger.warning("Skill deployment failed: %s", exc)
