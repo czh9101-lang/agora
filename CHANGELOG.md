@@ -43,6 +43,44 @@ a test now scans every shipped text file for the pattern so a documentation chan
 cannot silently fail the catalog CI (the same trap hit this project once before,
 in `MODULE_DEPENDENCIES.md` and then in the changelog describing it).
 
+### Two documented-but-inert paths (found by the catalog reviewer)
+
+Both from the v2.0.4 round; reported by @teknium1 in #1 and fixed in that PR,
+which this release merges.
+
+- **`agora_start_project` never accepted `allow_unattended`.** The README, the
+  `agora-setup` skill and the catalog Disclosure all tell users to call
+  `agora_start_project(..., allow_unattended=True)`, but `_START_PROJECT_SCHEMA`
+  had no such property and the handler never forwarded it — only the Dashboard's
+  `POST /projects` body did. Anyone following the README got the default, i.e. a
+  team that can read and discuss but cannot write files or run commands.
+  The flag is now on the schema (boolean, default `false`) and passed through.
+- **Bundled skills never deployed on project start.** `start_project` did
+  `from .agora import deploy_bundled_skills` — the inner `agora/` subpackage,
+  which does not define it. The `ImportError` was swallowed by the surrounding
+  `except Exception`, so it logged a warning and did nothing. Since `register()`
+  no longer deploys skills (see 2.0.4), that was the *only* automatic path left.
+  Now `from . import deploy_bundled_skills`, and the surrounding handler
+  distinguishes "no bundled skills" from a real failure.
+
+### Tests are hermetic now
+
+The board fixtures called `kanban_db.connect(board=…)`, whose path resolves from
+`HERMES_KANBAN_DB` / the Hermes home. The suite therefore depended on the ambient
+environment being writable and pre-created: on a machine where it is not, every
+board fixture errored with "unable to open database file", and the failures looked
+like real defects. An autouse fixture now pins `HERMES_KANBAN_DB` and
+`HERMES_HOME` inside each test's tmp dir. Verified by running the suite with a
+missing `HERMES_KANBAN_DB` parent, a read-only `HERMES_HOME`, and a read-only
+`HOME` with no `HERMES_HOME` — all 62 pass in each.
+
+The `conftest` bootstrap also now executes the plugin's `__init__.py` the way
+Hermes' loader does, instead of registering a bare module: that is what exposes
+package-level symbols, and its absence is how the wrong-package import above went
+unnoticed by the suite.
+
+**Tests:** 62 passing.
+
 ### `MODULE_DEPENDENCIES.md` rewritten
 
 The document was five versions stale and described the pre-2.0 layout. It is now

@@ -553,9 +553,19 @@ def start_project(
     """
     # Deploy the bundled skills (explicit user action — registration never
     # writes to disk). Idempotent; workers also fall back to the bundled copy.
+    #
+    # The import sits outside the try on purpose: a broken import is a code
+    # defect and must be loud, not a warning. It was inside a bare
+    # `except Exception` once, which is how `from .agora import …` (the wrong
+    # package) stayed invisible while the deploy silently did nothing.
+    from . import deploy_bundled_skills
+
     try:
-        from . import deploy_bundled_skills
-        deploy_bundled_skills()
+        deployed = deploy_bundled_skills()
+        if deployed:
+            logger.info("Deployed bundled skills for project %s: %s", project_name, ", ".join(deployed))
+        else:
+            logger.info("No bundled skills to deploy for project %s", project_name)
     except Exception as exc:
         logger.warning("Skill deployment failed: %s", exc)
 

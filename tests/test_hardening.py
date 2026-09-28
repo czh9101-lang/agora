@@ -375,3 +375,37 @@ def test_nothing_trips_the_agent_config_shell_scan():
         "these lines trip the security scan's agent_config_mod_shell rule; "
         f"write the context-file path without a preceding `>`: {offenders}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# The documented start-project path has to work end to end                    #
+# --------------------------------------------------------------------------- #
+
+def test_deploy_bundled_skills_lives_on_the_package_not_the_subpackage():
+    """`deploy_bundled_skills` is defined in the plugin package's __init__.
+
+    `start_project` used `from .agora import deploy_bundled_skills` — the inner
+    subpackage, which does not define it. The surrounding `except Exception`
+    swallowed the ImportError, so the documented "bundled skills deploy when a
+    project starts" path logged a warning and did nothing. With register() no
+    longer deploying them, that was the only automatic path left.
+    """
+    import importlib
+
+    inner = importlib.import_module("hermes_plugins.agora.agora")
+    assert not hasattr(inner, "deploy_bundled_skills"), "the inner package should not define it"
+    assert hasattr(importlib.import_module("hermes_plugins.agora"), "deploy_bundled_skills")
+
+
+def test_start_project_deploys_bundled_skills(tmp_path, monkeypatch):
+    """Calling start_project must actually deploy the skills, not just log."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+
+    project_planner.start_project(
+        project_name="deploy-check", workdir=str(tmp_path / "work"), goal="dummy",
+    )
+
+    skill = tmp_path / "skills" / "collaboration" / "agora-awareness" / "SKILL.md"
+    assert skill.is_file(), "bundled skills were not deployed on project start"
+
