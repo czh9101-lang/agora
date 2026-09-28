@@ -903,6 +903,7 @@ _START_PROJECT_SCHEMA = {
         "team": {"type": "string", "description": "Team name for assignee routing. Preserved if project already exists.", "default": ""},
         "heartbeat_member": {"type": "string", "description": "Worker name to wake on heartbeat (usually a leader). Preserved if project already exists; only overrides if non-empty.", "default": ""},
         "heartbeat_minutes": {"type": "integer", "description": "Heartbeat interval in minutes", "default": 15},
+        "allow_unattended": {"type": "boolean", "description": "Run this project's workers and leader with --yolo --accept-hooks (tool approvals bypassed). Off by default; without it flagged writes and shell commands fail closed.", "default": False},
     },
     "required": ["name"],
 }
@@ -1049,6 +1050,7 @@ def _register_project_tools(ctx: Any) -> None:
         team = args.get("team", "") or None
         heartbeat_member = args.get("heartbeat_member", "") or None
         heartbeat_minutes = args.get("heartbeat_minutes", 15)
+        allow_unattended = bool(args.get("allow_unattended", False))
         if not name:
             return {"error": "name is required"}
         return start_project(
@@ -1057,6 +1059,7 @@ def _register_project_tools(ctx: Any) -> None:
             initial_topic=initial_topic, max_rounds=max_rounds,
             team=team, heartbeat_member=heartbeat_member,
             heartbeat_minutes=heartbeat_minutes,
+            allow_unattended=allow_unattended,
         )
 
     ctx.register_tool(

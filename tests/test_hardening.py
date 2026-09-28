@@ -111,6 +111,30 @@ def test_agent_subprocess_bypasses_only_when_allowed(monkeypatch):
     assert "--accept-hooks" in cmd
 
 
+def test_start_project_tool_forwards_allow_unattended(monkeypatch):
+    """The documented opt-in ``agora_start_project(allow_unattended=True)`` reaches the registry."""
+    import asyncio
+
+    from hermes_plugins.agora import tools as tools_mod
+
+    registered: dict[str, dict] = {}
+
+    class _Ctx:
+        def register_tool(self, **kwargs):
+            registered[kwargs["name"]] = kwargs
+
+    tools_mod._register_project_tools(_Ctx())
+    tool = registered["agora_start_project"]
+    assert tool["schema"]["properties"]["allow_unattended"]["default"] is False
+
+    seen: dict = {}
+    monkeypatch.setattr(project_planner, "start_project", lambda **kw: seen.update(kw) or {"status": "ok"})
+    asyncio.run(tool["handler"]({"name": "p", "workdir": "/x", "allow_unattended": True}))
+    assert seen["allow_unattended"] is True
+    asyncio.run(tool["handler"]({"name": "p", "workdir": "/x"}))
+    assert seen["allow_unattended"] is False
+
+
 def test_project_defaults_to_unattended_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr(project_planner, "get_registry_dir", lambda name: _mk(tmp_path, name))
     assert project_planner.project_allows_unattended("") is False
