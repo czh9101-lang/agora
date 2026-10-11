@@ -13,7 +13,7 @@ Agora turns Hermes into a self-driving team: multiple AI roles — each a **real
 ## Prerequisites
 
 - **Hermes Agent installed and working** (v0.20.x or newer recommended)
-- **A model / provider configured** — each worker profile gets its own copy of the global `config.yaml` and `.env` when it is created, so no per-worker setup is needed; you can still pin a different model per worker in the Dashboard
+- **A model / provider configured** — each worker profile is provisioned through Hermes (`hermes profile create --clone`), which copies the global `config.yaml` and `.env` into it, so no per-worker setup is needed; you can still pin a different model per worker in the Dashboard
 - **The gateway running** — the kanban dispatcher lives in the gateway; it dispatches tasks and spawns workers. Check with `hermes gateway status`
 - **A project working directory** — the path to your repo (created automatically if missing)
 
@@ -172,7 +172,7 @@ Natural completion (the leader emitting `PROJECT_COMPLETE` twice in a row) perfo
 | Workers never pick up tasks | The gateway isn't running → `hermes gateway status`. The dispatcher lives in the gateway; without it nothing spawns workers |
 | Discussions never start | `agora_list_motions(status="active")` — is it stuck at 0 steps? The leader heartbeat auto-rescues stuck motions |
 | No Agora tab in the dashboard | You restarted only the gateway → `hermes dashboard restart` |
-| Worker says "No inference provider configured" | The global model config is missing, or its `.env` never reached the profile. Check `~/.hermes/.env` and `~/.hermes/profiles/<name>/.env` (the plugin copies it at worker creation; re-create the worker to refresh) |
+| Worker says "No inference provider configured" | The global model config is missing, or the profile was provisioned without it. Check `~/.hermes/.env` and `~/.hermes/profiles/<name>/.env` (the plugin provisions the profile via `hermes profile create --clone`, which is what copies it; re-create the worker to refresh) |
 | Workers keep crashing with 429/503 in the log | API rate limiting. Add `api_max_retries` (e.g. 50) to the worker profile, or globally `hermes config set agent.api_max_retries 50` |
 | "Unknown toolsets: agora" in the heartbeat log | A cosmetic ordering warning (CLI validation runs before plugin discovery finishes). Tools work fine — ignore it |
 
@@ -310,7 +310,7 @@ agora/
 │   │   └── motions.py           # 1.x SQLite storage (kept for legacy consumers, off the 2.0 hot path)
 │   ├── session_manager.py       # Session size tracking and rotation
 │   ├── worker_templates.py      # 8 role templates (SOUL.md rendering, 2-channel self-growth)
-│   ├── worker_manager.py        # Worker lifecycle (session locks, toolset writing, .env copy)
+│   ├── worker_manager.py        # Worker lifecycle (profile provisioning, session locks, toolset writing)
 │   ├── team_manager.py          # Team and assignee routing
 │   └── leader_loop.py           # Heartbeat + stuck-motion rescue + stale-state cleanup
 ├── dashboard/                   # Web UI + REST API

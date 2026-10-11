@@ -6,14 +6,14 @@ Each test pins a boundary that the plugin reached outside its own sandbox:
   ``tools`` package) and must still be importable as a package;
 * worker/leader subprocesses only get ``--yolo --accept-hooks`` when the project
   opted in;
-* the worker profile's ``.env`` is copied, not symlinked;
+* worker profiles are provisioned by core, so the plugin never reads the user's
+  ``.env`` itself (catalog rule 11);
 * task-scoped kanban operations refuse tasks outside the plugin's board.
 """
 from __future__ import annotations
 
 import json
 import os
-import stat
 import sys
 from pathlib import Path
 
@@ -25,7 +25,6 @@ from hermes_plugins.agora.agora import motion as motion_mod
 from hermes_plugins.agora.agora import chat
 from hermes_plugins.agora.agora import utils
 from hermes_plugins.agora import project_planner
-from hermes_plugins.agora.agora.worker_manager import _copy_global_env
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
@@ -149,41 +148,101 @@ def _mk(tmp_path, name):
 
 
 # --------------------------------------------------------------------------- #
-# Credentials: .env is copied, never symlinked                                #
+# Credentials: provisioned by core, never read by the plugin                   #
 # --------------------------------------------------------------------------- #
 
-def test_global_env_is_copied_not_symlinked(tmp_path):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    (home / ".env").write_text("OPENAI_API_KEY=secret-value\n")
+def test_worker_provisioning_goes_through_core(tmp_path, monkeypatch):
+    """Catalog rule 11: credentials come through Hermes, never from files.
 
-    profile = tmp_path / "profiles" / "worker1"
-    profile.mkdir(parents=True)
-    _copy_global_env(profile, home)
+    The plugin must not read the global ``.env`` itself. Core's own profile
+    provisioning copies ``config.yaml`` and ``.env`` (tightening the copy to
+    owner-only), so the plugin asks for a profile and touches no credential file.
+    """
+    from hermes_plugins.agora.agora import worker_manager
 
-    target = profile / ".env"
-    assert target.exists()
-    assert not target.is_symlink(), "a symlink lets the worker rewrite the real keys"
-    assert target.read_text() == "OPENAI_API_KEY=secret-value\n"
-    # copy2 preserves source mode bits, so the copy is tightened explicitly.
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(hermes_home / "kanban.db"))
+    (hermes_home / ".env").write_text("OPENAI_API_KEY=secret-value\n")
+
+    copies: list = []
+    for attr in ("copy2", "copy", "copyfile"):
+        monkeypatch.setattr(
+            worker_manager.shutil, attr,
+            lambda *a, _attr=attr, **k: copies.append((_attr, a)),
+        )
+    calls = _stand_in_for_profile_create(monkeypatch)
+
+    res = worker_manager.create_worker(name="probe", role="developer")
+
+    assert res.get("status") == "created", res
+    cmd = calls[0]["cmd"]
+    assert cmd[:3] == ["hermes", "profile", "create"], cmd
+    # Delegated, not hand-rolled: core does the cloning.
+    assert "--clone" in cmd and "--no-skills" in cmd, cmd
+    assert "--clone-from" not in cmd, cmd
+    # The global root is the clone source, so the worker inherits the keys.
+    assert calls[0]["env"]["HERMES_HOME"] == str(hermes_home)
+    # And the plugin copied no credential file itself.
+    assert [c for c in copies if str(c[1][0]).endswith(".env")] == [], copies
 
 
-def test_global_env_symlink_is_migrated(tmp_path):
-    """A symlink created by an older version is replaced with a real copy."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    real = home / ".env"
-    real.write_text("KEY=v\n")
+def test_clone_from_path_asks_for_that_source(tmp_path, monkeypatch):
+    """An explicit source still goes through core, with that profile named."""
+    from hermes_plugins.agora.agora import worker_manager
 
-    profile = tmp_path / "profiles" / "worker1"
-    profile.mkdir(parents=True)
-    (profile / ".env").symlink_to(real)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(hermes_home / "kanban.db"))
+    calls = _stand_in_for_profile_create(monkeypatch)
 
-    _copy_global_env(profile, home)
+    res = worker_manager.create_worker(
+        name="probe2", role="developer", clone_from="default",
+    )
 
-    assert not (profile / ".env").is_symlink()
-    assert (profile / ".env").read_text() == "KEY=v\n"
+    assert res.get("status") == "created", res
+    assert "--clone-from" in calls[0]["cmd"], calls[0]["cmd"]
+    assert "default" in calls[0]["cmd"], calls[0]["cmd"]
+
+
+def test_templated_role_replaces_the_cloned_soul(tmp_path, monkeypatch):
+    """A role worker gets its template's SOUL.md, not the operator's."""
+    from hermes_plugins.agora.agora import worker_manager
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(hermes_home / "kanban.db"))
+    _stand_in_for_profile_create(monkeypatch)
+
+    res = worker_manager.create_worker(name="probe3", role="developer")
+    assert res.get("status") == "created", res
+
+    soul = (hermes_home / "profiles" / "probe3" / "SOUL.md").read_text()
+    assert soul != "I am the operator.\n"
+
+
+def test_custom_role_does_not_inherit_the_cloned_soul(tmp_path, monkeypatch):
+    """A custom worker must not answer as the operator until its own SOUL lands.
+
+    Core's ``--clone`` copies the source profile's SOUL.md, and a custom worker's
+    SOUL.md is written afterwards by the caller — so the clone's copy has to go,
+    or a caller that fails partway leaves a worker speaking with the user's voice.
+    """
+    from hermes_plugins.agora.agora import worker_manager
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(hermes_home / "kanban.db"))
+    _stand_in_for_profile_create(monkeypatch)
+
+    res = worker_manager.create_worker(name="probe4", role="custom")
+    assert res.get("status") == "created", res
+
+    assert not (hermes_home / "profiles" / "probe4" / "SOUL.md").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -895,11 +954,47 @@ def test_heartbeat_spawns_once_the_leader_exits(active_project, monkeypatch):
     assert result.get("status") == "spawned", f"gate stayed shut: {result}"
 
 
+def _stand_in_for_profile_create(monkeypatch) -> list:
+    """Provision worker profiles without shelling out to the ``hermes`` CLI.
+
+    ``create_worker`` delegates to ``hermes profile create --clone`` so the plugin
+    never reads the user's ``.env`` itself (catalog rule 11). A test has no
+    configured Hermes home for that CLI to clone from, so this stands in for it:
+    create the profile directory and the files core would have copied. Returns the
+    recorded commands, so a test can assert on the delegation.
+    """
+    from hermes_plugins.agora.agora import worker_manager
+
+    profiles_root = worker_manager.get_profiles_root()
+    calls: list = []
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        calls.append({"cmd": cmd, "env": kwargs.get("env") or {}})
+        name = cmd[cmd.index("create") + 1]
+        profile = profiles_root / name
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "config.yaml").write_text("model:\n  default: probe\n")
+        (profile / ".env").write_text("PROBE=1\n")
+        # Core's --clone brings the source profile's SOUL.md along too.
+        (profile / "SOUL.md").write_text("I am the operator.\n")
+        return _Done()
+
+    monkeypatch.setattr(worker_manager.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker_manager, "find_hermes_binary", lambda: "hermes")
+    return calls
+
+
 @pytest.fixture()
 def team_project(tmp_path, monkeypatch):
     """An active project bound to a team with one developer and one reviewer."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "hermes-home" / "kanban.db"))
+    _stand_in_for_profile_create(monkeypatch)
 
     from hermes_plugins.agora.agora import team_manager, worker_manager
 

@@ -13,7 +13,7 @@ Agora 把 Hermes 变成一支自驱团队：多个 AI 角色 —— 每个都是
 ## 前置要求
 
 - **Hermes Agent 已安装并可用**（建议 v0.20.x 或更新）
-- **已配置模型 / Provider** —— 每个 worker profile 在创建时会各自复制一份全局 `config.yaml` 与 `.env`，无需逐个配置；也可在 Dashboard 里给单个 worker 指定不同模型
+- **已配置模型 / Provider** —— 每个 worker profile 由 Hermes 自己创建（`hermes profile create --clone`），由它把全局 `config.yaml` 与 `.env` 复制进去，无需逐个配置；也可在 Dashboard 里给单个 worker 指定不同模型
 - **Gateway 正在运行** —— kanban dispatcher 属于 gateway，任务由它自动派发并 spawn worker。用 `hermes gateway status` 查看
 - **一个项目工作目录** —— 你的代码仓库路径（不存在会被自动创建）
 
@@ -169,7 +169,7 @@ agora_stop_project(name="myapp")
 | Worker 不领取任务 | gateway 没在跑 → `hermes gateway status`。dispatcher 属于 gateway，不在跑就没人 spawn worker |
 | 讨论不启动 | `agora_list_motions(status="active")` 看是否卡在 0 步；leader 心跳会自动救援卡住的 motion |
 | Dashboard 里没有 Agora 标签 | 只重启了 gateway，没重启 dashboard → `hermes dashboard restart` |
-| Worker 报 "No inference provider configured" | 全局模型配置缺失，或 `.env` 没同步到 profile。检查 `~/.hermes/.env` 与 `~/.hermes/profiles/<名字>/.env`（插件在创建 worker 时复制一份；重新创建该 worker 即可刷新） |
+| Worker 报 "No inference provider configured" | 全局模型配置缺失，或该 profile 没带上它。检查 `~/.hermes/.env` 与 `~/.hermes/profiles/<名字>/.env`（插件是通过 `hermes profile create --clone` 创建 profile 的，复制由 Hermes 完成；重新创建该 worker 即可刷新） |
 | Worker 频繁崩溃、日志有 429/503 | API 限流。给 worker profile 加 `api_max_retries`（如 50），或全局 `hermes config set agent.api_max_retries 50` |
 | 心跳日志有 "Unknown toolsets: agora" | 装饰性时序警告（CLI 校验早于插件发现完成），工具实际正常，可忽略 |
 
@@ -307,7 +307,7 @@ agora/
 │   │   └── motions.py           # 1.x SQLite 存储（保留供旧消费者，已退出 2.0 热路径）
 │   ├── session_manager.py       # 会话体积跟踪与轮换
 │   ├── worker_templates.py      # 8 个角色模板（SOUL.md 渲染，2 通道自我进化）
-│   ├── worker_manager.py        # worker 生命周期（会话锁、工具集写入、.env 复制）
+│   ├── worker_manager.py        # worker 生命周期（profile 创建、会话锁、工具集写入）
 │   ├── team_manager.py          # 团队与指派路由
 │   └── leader_loop.py           # 心跳 + 卡住 motion 救援 + 过期状态清理
 ├── dashboard/                   # Web UI + REST API

@@ -114,50 +114,40 @@ def create_worker(
     if profile_dir.exists():
         return {"error": f"Profile directory '{profile_dir}' already exists."}
 
-    # Step 1: Create the profile directory and copy config.yaml
-    # When clone_from is None (default), create the profile dir manually and
-    # copy config.yaml from the global root config (~/.hermes/config.yaml).
-    # When clone_from is given, use `hermes profile create --clone-from` for
-    # advanced users who want to inherit from a specific existing profile.
+    # Step 1: Provision the profile through core.
+    #
+    # Catalog rule 11: credentials come through Hermes, never from files. Core's
+    # own provisioning copies config.yaml and .env for the new profile (tightening
+    # the copy to owner-only), so the plugin asks for a profile instead of reading
+    # the user's credential file itself. With no explicit source, HERMES_HOME below
+    # points at the global root, so `--clone` resolves to the profile that holds the
+    # user's real configuration and keys.
+    hermes = find_hermes_binary()
+    create_cmd = [
+        hermes, "profile", "create", name,
+        "--description", description,
+    ]
     if clone_from:
-        hermes = find_hermes_binary()
-        clone_cmd = [
-            hermes, "profile", "create", name,
-            "--clone-from", clone_from,
-            "--description", description,
-        ]
-        try:
-            result = subprocess.run(
-                clone_cmd,
-                capture_output=True, text=True, timeout=30,
-                env={**os.environ, "HERMES_HOME": str(profiles_root.parent)},
-            )
-            if result.returncode != 0:
-                return {
-                    "error": f"Failed to clone profile: {result.stderr.strip() or result.stdout.strip()}",
-                    "command": " ".join(clone_cmd),
-                }
-        except Exception as exc:
-            return {"error": f"Failed to clone profile: {exc}"}
+        create_cmd += ["--clone-from", clone_from]
     else:
-        # Create the profile directory manually
-        try:
-            profile_dir.mkdir(parents=True, exist_ok=False)
-        except Exception as exc:
-            return {"error": f"Failed to create profile directory '{profile_dir}': {exc}"}
-
-    # Step 1b: Ensure config.yaml exists in the profile directory.
-    # Profiles without config.yaml fall back to DEFAULT_CONFIG (compression
-    # threshold=0.50, target_ratio=0.20 — too aggressive). Copy from root
-    # config so the profile inherits the user's actual settings.
-    profile_config = profile_dir / "config.yaml"
-    if not profile_config.exists():
-        try:
-            root_config = profiles_root.parent / "config.yaml"
-            if root_config.exists():
-                shutil.copy2(root_config, profile_config)
-        except Exception as exc:
-            logger.warning("Failed to copy config.yaml to profile %s: %s", name, exc)
+        # --no-skills: the worker is seeded with the agora-awareness skill and
+        # reads the shared skills directory through skills.external_dirs (Step 1d),
+        # so inheriting the source profile's whole skills tree into every worker is
+        # neither wanted nor free.
+        create_cmd += ["--clone", "--no-skills"]
+    try:
+        result = subprocess.run(
+            create_cmd,
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "HERMES_HOME": str(profiles_root.parent)},
+        )
+        if result.returncode != 0:
+            return {
+                "error": f"Failed to create profile: {result.stderr.strip() or result.stdout.strip()}",
+                "command": " ".join(create_cmd),
+            }
+    except Exception as exc:
+        return {"error": f"Failed to create profile: {exc}"}
 
     # Step 1c: Ensure compression.in_place: true so session IDs don't change
     # on context compression — --resume <session_id> always works.
@@ -177,14 +167,6 @@ def create_worker(
     # ~/.hermes/plugins/ (e.g. agora itself) and their tools are unavailable.
     _link_global_plugins(profile_dir, profiles_root.parent)
 
-    # Step 1f: Copy the global .env into the profile directory.
-    # Workers spawned with -p <profile> have HERMES_HOME pointing at their
-    # profile directory, so Hermes reads <profile>/.env for secrets. Without
-    # this, workers can't find API keys and fail with "No inference provider
-    # configured". Copied (not symlinked) to match core's profile provisioning:
-    # a symlink would let a worker edit the user's real keys through the link.
-    _copy_global_env(profile_dir, profiles_root.parent)
-
     # Step 2: Write SOUL.md
     if template is not None:
         soul_path = profile_dir / "SOUL.md"
@@ -193,7 +175,14 @@ def create_worker(
             soul_path.write_text(soul_content)
         except Exception as exc:
             logger.warning("Failed to write SOUL.md for %s: %s", name, exc)
-    # For custom role, SOUL.md is written separately by the caller
+    else:
+        # Role 'custom': the caller writes SOUL.md (Step 2 note above). Core's
+        # clone brought the source profile's SOUL.md along, so drop it: until the
+        # caller writes its own, the worker must not answer as the operator.
+        try:
+            (profile_dir / "SOUL.md").unlink()
+        except OSError:
+            pass
 
     # Step 3: Ensure memories/MEMORY.md exists (Hermes memory tool reads/writes here)
     # NOTE: Hermes v0.18 memory tool uses <profile>/memories/MEMORY.md, NOT <profile>/MEMORY.md
@@ -531,45 +520,3 @@ def _link_global_plugins(profile_dir: Path, hermes_root: Path) -> None:
                 logger.warning("Failed to symlink plugin %s: %s", entry.name, exc)
     except Exception as exc:
         logger.warning("Failed to link global plugins into %s: %s", profile_dir, exc)
-
-
-def _copy_global_env(profile_dir: Path, hermes_root: Path) -> None:
-    """Copy the global .env into the profile directory.
-
-    Workers spawned with -p <profile> have HERMES_HOME pointing at their
-    profile directory, so Hermes reads ``<profile>/.env`` for API keys
-    and secrets. Without this, workers can't find credentials and fail
-    with "No inference provider configured".
-
-    Copied rather than symlinked, matching core's profile provisioning
-    (``hermes_cli/profiles.py::_clone_file``): a symlink would let anything
-    running inside the worker profile read *and rewrite* the user's real keys
-    through the link. The copy is tightened to owner-only because ``copy2``
-    preserves the source's mode bits, so a loose source (umask 0o644) would
-    leak. Existing real .env files are left untouched to respect manual
-    overrides; an existing *symlink* is materialized into a copy so installs
-    created by older versions are migrated off the link.
-    """
-    try:
-        global_env = hermes_root / ".env"
-        if not global_env.exists():
-            return
-
-        profile_env = profile_dir / ".env"
-        if profile_env.is_symlink():
-            try:
-                profile_env.unlink()
-            except OSError as exc:
-                logger.warning("Failed to drop .env symlink %s: %s", profile_env, exc)
-                return
-        elif profile_env.exists():
-            return
-
-        shutil.copy2(global_env, profile_env)
-        try:
-            os.chmod(str(profile_env), 0o600)
-        except OSError as exc:
-            logger.warning("Failed to tighten .env mode for %s: %s", profile_env, exc)
-        logger.info("Copied .env → %s (mode 0600)", profile_env)
-    except Exception as exc:
-        logger.warning("Failed to copy .env into %s: %s", profile_dir, exc)
