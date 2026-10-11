@@ -405,7 +405,12 @@ def test_heartbeat_script_bakes_the_hermes_import_paths(tmp_path, monkeypatch):
     A board read that fails on every heartbeat makes the completion gate defer
     forever, which looks exactly like a project that is still working.
     """
-    core = tmp_path / "core"
+    import subprocess
+
+    # A quote and a dollar in the path, so the round-trip below only passes if
+    # the value was shell-quoted: it lands unquoted in an assignment in the
+    # generated script, where a bare `"` would be swallowed and a `$` expanded.
+    core = tmp_path / 'core "quoted" $dollar'
     (core / "hermes_cli").mkdir(parents=True)
     (core / "hermes_cli" / "__init__.py").write_text("")
     deps = tmp_path / "site-packages"
@@ -414,16 +419,33 @@ def test_heartbeat_script_bakes_the_hermes_import_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "path", [str(core), str(deps)] + sys.path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     project_planner._ensure_heartbeat_script()
 
     body = (tmp_path / "scripts" / "leader_heartbeat.sh").read_text()
-    assert f'AGORA_CORE_ROOT="{core}"' in body
-    assert str(deps) in body
     assert "export PYTHONPATH=" in body
     # When the baked path stops resolving it must say so and stop, not run a
     # heartbeat that silently cannot read the board.
     assert "hermes_cli/__init__.py" in body
     assert "exit 1" in body
+
+    # Let bash parse the assignments and hand the values back, rather than
+    # matching the literal text.
+    assignments = [
+        line for line in body.splitlines()
+        if line.startswith(("AGORA_CORE_ROOT=", "AGORA_DEPS_DIRS="))
+    ]
+    assert len(assignments) == 2, assignments
+    check = subprocess.run(
+        ["bash", "-c", "\n".join(
+            assignments + ['printf "%s|%s" "$AGORA_CORE_ROOT" "$AGORA_DEPS_DIRS"']
+        )],
+        capture_output=True, text=True,
+    )
+    assert check.returncode == 0, check.stderr
+    baked_core, baked_deps = check.stdout.split("|")
+    assert baked_core == str(core)
+    assert str(deps) in baked_deps.split(":")
 
 
 def test_discussion_runner_env_carries_the_hermes_import_paths(tmp_path, monkeypatch):

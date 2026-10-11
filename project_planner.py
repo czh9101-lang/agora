@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -431,7 +432,7 @@ PYTHON="${AGORA_PYTHON:-}"
 if [ -z "$PYTHON" ]; then
     # First choice is the interpreter that generated this script (it is the one
     # Hermes runs under, so hermes_cli is importable); the rest are fallbacks.
-    for p in "__AGORA_GEN_PYTHON__" "$HERMES_HOME/hermes-agent/venv/bin/python3" "$(command -v python3)"; do
+    for p in __AGORA_GEN_PYTHON__ "$HERMES_HOME/hermes-agent/venv/bin/python3" "$(command -v python3)"; do
         [ -x "$p" ] && PYTHON="$p" && break
     done
 fi
@@ -445,8 +446,8 @@ fi
 # third-party dependency on its own. Both paths were discovered from sys.path
 # when this script was written — never guessed, so a layout that keeps core
 # outside $HERMES_HOME/hermes-agent still resolves.
-AGORA_CORE_ROOT="__AGORA_CORE_ROOT__"
-AGORA_DEPS_DIRS="__AGORA_DEPS_DIRS__"
+AGORA_CORE_ROOT=__AGORA_CORE_ROOT__
+AGORA_DEPS_DIRS=__AGORA_DEPS_DIRS__
 if [ -f "$AGORA_CORE_ROOT/hermes_cli/__init__.py" ]; then
     _agora_paths="$AGORA_CORE_ROOT"
     [ -n "$AGORA_DEPS_DIRS" ] && _agora_paths="$_agora_paths:$AGORA_DEPS_DIRS"
@@ -506,11 +507,18 @@ PY
 } 2>&1 | tail -10
 """
         _core_roots, _deps_dirs = capture_hermes_import_env()
-        script_content = script_content.replace("__AGORA_GEN_PYTHON__", sys.executable)
+        # These land unquoted in the generated shell script, so quote them: a
+        # path containing a space, quote, $ or backtick would otherwise split
+        # the assignment or run something.
         script_content = script_content.replace(
-            "__AGORA_CORE_ROOT__", _core_roots[0] if _core_roots else ""
+            "__AGORA_GEN_PYTHON__", shlex.quote(sys.executable)
         )
-        script_content = script_content.replace("__AGORA_DEPS_DIRS__", ":".join(_deps_dirs))
+        script_content = script_content.replace(
+            "__AGORA_CORE_ROOT__", shlex.quote(_core_roots[0] if _core_roots else "")
+        )
+        script_content = script_content.replace(
+            "__AGORA_DEPS_DIRS__", shlex.quote(":".join(_deps_dirs))
+        )
         if script_path.exists():
             try:
                 if script_path.read_text() == script_content:
