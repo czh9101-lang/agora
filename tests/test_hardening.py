@@ -976,6 +976,140 @@ def test_heartbeat_spawns_once_the_leader_exits(active_project, monkeypatch):
     assert result.get("status") == "spawned", f"gate stayed shut: {result}"
 
 
+def test_reactivation_rebuilds_the_chat_channel(tmp_path, monkeypatch):
+    """Stopping deletes the chat root; reactivating must mint a live one (#8).
+
+    ``stop_project`` deletes every kanban task the project owns, chat root
+    included, so the persisted ``chat_root_id`` becomes a dead id. The
+    reactivation branch re-created the heartbeat cron but not the channel, so
+    every later ``agora_raise_motion`` failed with "unknown parent task(s)" and
+    the leader re-probed a dead channel until the project parked itself.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "hermes-home" / "kanban.db"))
+    workdir = tmp_path / "work"
+
+    first = project_planner.start_project(
+        project_name="re-up", workdir=str(workdir), goal="dummy",
+    )
+    first_root = first["project"].get("chat_root_id")
+    assert first_root, "a fresh project must get a chat channel"
+
+    # Stop: deletes every task on the project's board, chat root included.
+    project_planner.stop_project("re-up")
+    conn = kb.connect()
+    try:
+        alive = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE id = ?", (first_root,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert alive == 0, "the stopped chat root should be gone"
+
+    # Re-activate the same project — this is the branch that skipped the channel.
+    reactivated = project_planner.start_project(
+        project_name="re-up", workdir=str(workdir), goal="dummy again",
+    )
+    assert reactivated.get("status") == "started", reactivated
+    project = reactivated["project"]
+    assert project["status"] == "active"
+    new_root = project.get("chat_root_id")
+    assert new_root and new_root != first_root, "reactivation reused the dead id"
+
+    # The id has to survive the branch's own write of the project file.
+    on_disk = json.loads(project_planner._project_file("re-up").read_text())
+    assert on_disk["chat_root_id"] == new_root, "the write clobbered the fresh id"
+
+    # And it must be a task that actually exists, so motions can parent to it.
+    conn = kb.connect()
+    try:
+        exists = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE id = ?", (new_root,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert exists == 1, "the reactivated chat root is not a live task"
+
+
+def test_update_project_reactivate_rebuilds_the_chat_channel(tmp_path, monkeypatch):
+    """``update_project(reactivate=True)`` goes through the same branch (#8).
+
+    Same failure, second entry point: the flag re-creates the heartbeat cron
+    and stops there.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "hermes-home" / "kanban.db"))
+    workdir = tmp_path / "work"
+
+    first = project_planner.start_project(
+        project_name="re-up2", workdir=str(workdir), goal="dummy",
+    )
+    first_root = first["project"].get("chat_root_id")
+    project_planner.stop_project("re-up2")
+
+    updated = project_planner.update_project("re-up2", reactivate=True, goal="phase 2")
+    assert updated.get("status") == "updated", updated
+    project = updated["project"]
+    assert project["status"] == "active"
+    new_root = project.get("chat_root_id")
+    assert new_root and new_root != first_root
+
+    on_disk = json.loads(project_planner._project_file("re-up2").read_text())
+    assert on_disk["chat_root_id"] == new_root, "the write clobbered the fresh id"
+    assert on_disk["goal"] == "phase 2", "the reactivate dropped the other changes"
+
+    conn = kb.connect()
+    try:
+        exists = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE id = ?", (new_root,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert exists == 1, "the reactivated chat root is not a live task"
+
+
+def test_update_project_without_reactivate_still_persists(tmp_path, monkeypatch):
+    """A plain update must still write the file (guard against over-indenting)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    workdir = tmp_path / "work"
+
+    project_planner.start_project(
+        project_name="plain-up", workdir=str(workdir), goal="dummy",
+    )
+    updated = project_planner.update_project("plain-up", goal="changed")
+    assert updated.get("status") == "updated", updated
+    assert updated["project"]["goal"] == "changed"
+
+    on_disk = json.loads(project_planner._project_file("plain-up").read_text())
+    assert on_disk["goal"] == "changed", "a plain update did not reach disk"
+
+
+def test_reactivation_leaves_the_chat_root_usable_by_a_motion(tmp_path, monkeypatch):
+    """The end-to-end consequence: a motion can hang off the reactivated root."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    workdir = tmp_path / "work"
+
+    project_planner.start_project(
+        project_name="re-motion", workdir=str(workdir), goal="dummy",
+    )
+    project_planner.stop_project("re-motion")
+    reactivated = project_planner.start_project(
+        project_name="re-motion", workdir=str(workdir), goal="dummy",
+    )
+    root = reactivated["project"]["chat_root_id"]
+
+    conn = kb.connect()
+    try:
+        motion_id = motion_mod.create_motion(
+            conn, chat_root_id=root, title="after reactivation",
+            participants=["a", "b"], chair="leader",
+            tenant=project_planner.agora_board_for("re-motion"),
+        )
+    finally:
+        conn.close()
+    assert motion_id, "a motion could not be created on the reactivated root"
+
+
 def _stand_in_for_profile_create(monkeypatch) -> list:
     """Provision worker profiles without shelling out to the ``hermes`` CLI.
 

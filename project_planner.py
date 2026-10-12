@@ -58,12 +58,16 @@ def _project_file(project_name: str) -> Path:
     return get_registry_dir("projects") / f"{safe_name(project_name)}.json"
 
 
-def _ensure_chat_channel(project_name: str, board_name: str, team: str | None, heartbeat_member: str | None) -> None:
+def _ensure_chat_channel(
+    project_name: str, board_name: str, team: str | None, heartbeat_member: str | None,
+) -> str | None:
     """Create the 2.0 team chat root and subscribe all known workers.
 
     The chat root is a persistent Kanban task pinned ``scheduled``; workers
     post ``[agora:msg]`` comments and pull unseen messages via notify cursors
-    (see agora.chat). Persists ``chat_root_id`` into the project JSON.
+    (see agora.chat). Persists ``chat_root_id`` into the project JSON and
+    returns the root id, so a caller that is about to write the project file
+    itself can carry the fresh id instead of re-reading after this wrote it.
     """
     try:
         from .agora.chat import ensure_chat_root, subscribe_worker
@@ -95,10 +99,45 @@ def _ensure_chat_channel(project_name: str, board_name: str, team: str | None, h
                 data["chat_root_id"] = root_id
                 pf.write_text(json.dumps(data, indent=2))
             logger.info("Chat channel ready for project %s (root=%s, workers=%d)", project_name, root_id, len(workers))
+            return root_id
         finally:
             conn.close()
     except Exception as exc:
         logger.warning("Chat channel setup failed for %s: %s", project_name, exc)
+    return None
+
+
+def _reactivate_chat_channel(project_name: str, project: dict) -> None:
+    """Re-ensure the chat channel for a project being reactivated.
+
+    ``stop_project`` / ``on_project_complete`` delete every kanban task the
+    project owns, including the chat root — so a persisted ``chat_root_id`` is
+    a dead id the moment a project has been stopped or completed. Reactivating
+    re-created the heartbeat cron but not the channel, which left every
+    ``agora_raise_motion`` / ``agora_message`` failing with "unknown parent
+    task(s)" and the leader re-probing a dead channel on each tick until the
+    project parked itself.
+
+    ``ensure_chat_root`` is idempotent (``idempotency_key``), so this is safe
+    on a reactivation where the root is still alive.
+
+    Mutates ``project`` in place so the caller's single write carries the fresh
+    id; the caller writes the file once afterwards.
+    """
+    root_id = _ensure_chat_channel(
+        project_name,
+        agora_board_for(project_name),
+        project.get("team"),
+        project.get("heartbeat_member"),
+    )
+    if root_id:
+        project["chat_root_id"] = root_id
+    else:
+        logger.warning(
+            "Project %s reactivated without a chat channel — motions and "
+            "messages will fail until one exists; check the kanban connection.",
+            project_name,
+        )
 
 
 def _ensure_project_board(project_name: str) -> str:
@@ -693,9 +732,16 @@ def start_project(
                     cron_id = _create_heartbeat_cron(project_name, existing["heartbeat_minutes"])
                     if cron_id:
                         existing["heartbeat_cron_id"] = cron_id
+            # stop_project()/on_project_complete() delete every task this project
+            # owns, chat root included, so chat_root_id is a dead id after any
+            # stop/complete cycle. Re-ensure before the single write below.
+            _reactivate_chat_channel(project_name, existing)
             pf.write_text(json.dumps(existing, indent=2))
             update_project_agents_md(project_name)
-            return existing
+            # Same shape as the fresh-creation path below: callers (dashboard,
+            # tools, tests) read result["project"], and a bare dict here meant
+            # the reactivation result could not be consumed the same way.
+            return {"status": "started", "project": existing}
 
     # Warn if no team bound — leader won't be able to route tasks by role
     if not team:
@@ -769,7 +815,12 @@ def start_project(
         _add_project_to_worker(heartbeat_member, project_name)
 
     # 2.0: create the team chat root and subscribe all known workers.
-    _ensure_chat_channel(project_name, board_name, team, heartbeat_member)
+    # The helper persists the id itself (it may be called before this dict is
+    # written); carry the return value too, so the caller's `data` — which is
+    # what start_project hands back — matches what landed on disk.
+    _new_root = _ensure_chat_channel(project_name, board_name, team, heartbeat_member)
+    if _new_root:
+        data["chat_root_id"] = _new_root
 
     # Write AGENTS.md to workdir so workers auto-load team context
     update_project_agents_md(project_name)
@@ -808,8 +859,14 @@ def stop_project(project_name: str) -> dict:
             task_ids = [r[0] for r in rows]
             deleted = 0
             for tid in task_ids:
-                _kdb.delete_archived_task(conn, tid)
-                deleted += 1
+                # delete_archived_task() refuses anything that is not already
+                # archived — the two-step delete is deliberate (data loss takes
+                # two actions), so archive first and count what really went.
+                # A live task (the chat root sits in `scheduled`) was otherwise
+                # silently kept while the log claimed it had been deleted.
+                _kdb.archive_task(conn, tid)
+                if _kdb.delete_archived_task(conn, tid):
+                    deleted += 1
             conn.commit()
             logger.info(
                 "Project '%s' stopped: deleted %d kanban tasks",
@@ -897,6 +954,9 @@ def update_project(
                 if cron_id:
                     data["heartbeat_cron_id"] = cron_id
         changes.append("status=active")
+        # Same as start_project's reactivation: a stop/complete deleted the
+        # chat root, so the channel has to come back for this project to talk.
+        _reactivate_chat_channel(project_name, data)
 
     pf.write_text(json.dumps(data, indent=2))
     logger.info(
@@ -1268,8 +1328,12 @@ def on_project_complete(project_name: str) -> None:
                 task_ids = [r[0] for r in rows]
                 deleted = 0
                 for tid in task_ids:
-                    _kdb.delete_archived_task(conn, tid)
-                    deleted += 1
+                    # As in stop_project: archive first, then delete, and count
+                    # what actually went — delete_archived_task() no-ops on a
+                    # task that is not archived yet.
+                    _kdb.archive_task(conn, tid)
+                    if _kdb.delete_archived_task(conn, tid):
+                        deleted += 1
                 conn.commit()
                 logger.info(
                     "Project '%s' complete: deleted %d kanban tasks",
