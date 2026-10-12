@@ -2,6 +2,67 @@
 
 All notable changes to the Agora plugin are documented here.
 
+## [2.0.12] — 2026-10-12
+
+### Reactivating a project left it without a chat channel
+
+Reported twice against a live install: after a project had been stopped or
+completed, restarting it re-created the heartbeat cron and set the status back
+to `active` — but never rebuilt the chat channel. Stopping had removed every
+task the project owned, chat root included, so the persisted `chat_root_id`
+pointed at a task that no longer existed. Every `agora_raise_motion` and
+`agora_message` after that failed with `unknown parent task(s)`, and the leader
+re-probed the dead channel on each heartbeat until the project parked itself.
+
+Both entry points — `agora_start_project` on an existing project, and
+`agora_update_project(reactivate=True)` — now go through one helper that
+re-ensures the channel. `ensure_chat_root` is idempotent, so a reactivation
+where the root is still alive is a no-op. `_ensure_chat_channel` returns the
+root id, so the reactivation carries the fresh id into its own single write of
+the project file instead of re-reading a file it just wrote; the fresh-creation
+path returns the same id in its result, which previously disagreed with disk.
+
+### Stopping or completing a project never actually deleted anything
+
+Found while verifying the above. `delete_archived_task()` refuses a task that is
+not already archived — the two-step delete is deliberate, so data loss takes two
+actions — and both `stop_project` and `on_project_complete` called it directly on
+live tasks. Every call was a no-op, while the log still reported `deleted N
+kanban tasks` with N counted as the number of rows walked. The chat root, pinned
+`scheduled` and therefore never archived, was exactly the task that survived.
+Tasks are archived before deletion now, and only real deletions are counted.
+
+### Worker profiles are provisioned by core, never by the plugin reading credentials
+
+Catalog rule 11 now reads "credentials come through Hermes, never from files": a
+plugin reads declared secrets through `agent.secret_scope`, and never reads
+`.env`, `auth.json`, or another credential store itself. `create_worker` used to
+copy the global `.env` into every worker profile. Core already provisions a
+profile — `hermes profile create --clone` copies `config.yaml`, `.env` and
+`SOUL.md`, tightening the `.env` copy to owner-only — so the default path now
+asks core for the profile and touches no credential file.
+
+`--no-skills` on that path: the worker is seeded with the agora-awareness skill
+and reads the shared skills directory through `skills.external_dirs`, so
+inheriting the source profile's whole skills tree into every worker is neither
+wanted nor free. One behaviour the clone introduces: it also brings the source
+profile's `SOUL.md`; a templated role overwrites it immediately, so a `custom`
+role's copy is dropped — otherwise a caller that failed partway would leave a
+worker answering in the operator's voice.
+
+### The generated heartbeat script quoted its baked paths
+
+The paths substituted into `leader_heartbeat.sh` landed inside double quotes, so
+a path containing `"`, `$` or a backtick broke out of the assignment. They are
+passed through `shlex.quote` now, with the surrounding quotes removed.
+
+### From the release-gate review
+
+A failed deletion of the cloned `SOUL.md` in the custom-role branch was caught
+and discarded silently; it now logs a warning naming the consequence. The
+`create_worker` and module docstrings no longer describe copying `config.yaml`
+by hand, and the Step numbering runs continuously again.
+
 ## [2.0.11] — 2026-10-10
 
 Reported from a live install: the leader emitted `PROJECT_COMPLETE` 128 times
