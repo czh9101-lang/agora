@@ -1,7 +1,7 @@
 """Worker profile manager — create, list, remove Hermes profiles from templates.
 
 A "worker" is a Hermes profile with:
-  - config.yaml    (copied from global config.yaml)
+  - config.yaml    (with .env, both provisioned by core from the source profile)
   - SOUL.md        (role identity, rendered from template)
   - MEMORY.md      (empty initially, accumulates experience over time)
   - USER.md        (empty initially)
@@ -64,7 +64,8 @@ def create_worker(
     """Create a new worker profile from a role template.
 
     This creates a full Hermes profile with:
-    - config.yaml (API keys, model, toolsets) copied from global config.yaml
+    - config.yaml and .env provisioned by core (`hermes profile create
+      --clone` does the copy and tightens the .env to owner-only)
     - SOUL.md rendered from the role template
     - Empty MEMORY.md and USER.md
     - Independent skills/ directory
@@ -73,10 +74,11 @@ def create_worker(
     Args:
         name:        Profile name (lowercase, alphanumeric, e.g. "alice")
         role:        Template role key (architect/developer/reviewer/tester/devops/researcher/writer/leader)
-        clone_from:  Source profile to clone from (default: None — copy global
-                     config.yaml directly). When set, clones the named profile
-                     instead, for advanced users who want to inherit from a
-                     specific existing profile.
+        clone_from:  Source profile for core to clone from. Default (None)
+                     clones from the active profile: HERMES_HOME is pointed at
+                     the global root, so that resolves to the profile holding the
+                     user's real configuration and keys. Set it to inherit from a
+                     specific existing profile instead.
         model:       Override model for this worker (default: from template or inherit)
         extra_config: Additional config overrides (rarely needed)
 
@@ -131,7 +133,7 @@ def create_worker(
         create_cmd += ["--clone-from", clone_from]
     else:
         # --no-skills: the worker is seeded with the agora-awareness skill and
-        # reads the shared skills directory through skills.external_dirs (Step 1d),
+        # reads the shared skills directory through skills.external_dirs (Step 1c),
         # so inheriting the source profile's whole skills tree into every worker is
         # neither wanted nor free.
         create_cmd += ["--clone", "--no-skills"]
@@ -149,18 +151,18 @@ def create_worker(
     except Exception as exc:
         return {"error": f"Failed to create profile: {exc}"}
 
-    # Step 1c: Ensure compression.in_place: true so session IDs don't change
+    # Step 1b: Ensure compression.in_place: true so session IDs don't change
     # on context compression — --resume <session_id> always works.
     ensure_in_place_compression(profile_dir / "config.yaml")
 
-    # Step 1d: Inject skills.external_dirs so the worker can read global
+    # Step 1c: Inject skills.external_dirs so the worker can read global
     # shared skills (~/.hermes/skills/) while keeping its own profile-local
     # skills/ directory for skills it creates via skill_manage.
     # Without this, a worker spawned with -p <profile> would only see its
     # own (nearly empty) skills/ dir and be blind to the 40+ shared skills.
     _inject_external_skills(profile_dir / "config.yaml", profiles_root.parent)
 
-    # Step 1e: Link global plugins into the profile's plugins/ directory.
+    # Step 1d: Link global plugins into the profile's plugins/ directory.
     # Workers spawned with -p <profile> have HERMES_HOME pointing at their
     # profile directory, so Hermes only scans <profile>/plugins/ for plugins.
     # Without this, workers can't see plugins installed in the global
@@ -181,8 +183,16 @@ def create_worker(
         # caller writes its own, the worker must not answer as the operator.
         try:
             (profile_dir / "SOUL.md").unlink()
-        except OSError:
-            pass
+        except FileNotFoundError:
+            pass  # nothing was cloned to drop
+        except OSError as exc:
+            # Not silent: a copy left behind means the worker answers in the
+            # operator's voice until the caller writes its own SOUL.md.
+            logger.warning(
+                "Failed to drop the cloned SOUL.md for %s: %s — until the "
+                "caller writes one, this worker may speak as the operator.",
+                name, exc,
+            )
 
     # Step 3: Ensure memories/MEMORY.md exists (Hermes memory tool reads/writes here)
     # NOTE: Hermes v0.18 memory tool uses <profile>/memories/MEMORY.md, NOT <profile>/MEMORY.md
